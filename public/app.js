@@ -1,924 +1,931 @@
-const BUILD_VERSION = '4.2.0';
-const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
-const socket = io({ transports: ['websocket', 'polling'] });
+'use strict';
+
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const QUALITY = {
-  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
-  '480p30': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1500000 },
-  '720p30': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 3000000 },
-  '1080p30': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
-  '1080p60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 9000000 },
-  '1440p60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 14000000 }
+  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 4_500_000 },
+  '480': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1_250_000 },
+  '720': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 2_500_000 },
+  '1080': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 4_500_000 },
+  '1080-60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 7_000_000 },
+  '1440-60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 11_000_000 }
 };
 
-const makeClientId = () => globalThis.crypto?.randomUUID ? crypto.randomUUID() : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const clientId = localStorage.getItem('lnz_client_id') || makeClientId();
-localStorage.setItem('lnz_client_id', clientId);
+const STORE = {
+  clientId: 'lnz_v5_client_id',
+  nickname: 'lnz_v5_nickname',
+  avatar: 'lnz_v5_avatar',
+  quality: 'lnz_v5_quality',
+  volume: 'lnz_v5_volume',
+  sounds: 'lnz_v5_sounds',
+  compressor: 'lnz_v5_compressor',
+  autoChat: 'lnz_v5_auto_chat',
+  updates: 'lnz_v5_updates'
+};
 
-let rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
-let currentRoom = null;
-let currentNickname = localStorage.getItem('lnz_nickname') || '';
-let currentAvatar = localStorage.getItem('lnz_avatar') || '';
-let ownerToken = null;
-let isOwner = false;
-let roomLocked = false;
-let roomPublic = false;
-let members = new Map();
+function stableClientId() {
+  let id = localStorage.getItem(STORE.clientId);
+  if (!id) {
+    id = crypto.randomUUID?.() || `lnz-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem(STORE.clientId, id);
+  }
+  return id;
+}
+
+const clientId = stableClientId();
+let currentNickname = (localStorage.getItem(STORE.nickname) || 'Linozera').slice(0, 24);
+let currentAvatar = localStorage.getItem(STORE.avatar) || '';
+let selectedQuality = QUALITY[localStorage.getItem(STORE.quality)] ? localStorage.getItem(STORE.quality) : 'auto';
+let masterVolume = clamp(Number(localStorage.getItem(STORE.volume) || 120), 0, 150);
+let uiSounds = localStorage.getItem(STORE.sounds) !== 'false';
+let compressorEnabled = localStorage.getItem(STORE.compressor) !== 'false';
+let autoChat = localStorage.getItem(STORE.autoChat) !== 'false';
+let updateNotices = localStorage.getItem(STORE.updates) !== 'false';
+
+let currentRoom = sessionStorage.getItem('lnz_v5_room') || '';
+let ownerToken = sessionStorage.getItem('lnz_v5_owner_token') || '';
+let isOwner = sessionStorage.getItem('lnz_v5_is_owner') === 'true';
+let roomStatus = null;
+let config = { version: '5.0.0', iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 let localStream = null;
-let selectedQuality = localStorage.getItem('lnz_quality') || 'auto';
-let layoutMode = 'grid';
-let focusedClientId = null;
-let reconnecting = false;
-
-const peers = new Map();
-const pendingIce = new Map();
-const knownViewers = new Set();
-let viewerHostId = null;
-const remoteStreams = new Map();
-const chatIds = new Set();
-const channelMix = new Map();
-let masterVolume = 1;
+let remoteStream = null;
+let remoteHostSocketId = null;
+let attachedRemoteAt = 0;
+let lastBlackRecovery = 0;
+let peers = new Map();
+let pendingIce = new Map();
+let peerRecovery = new Map();
+let hostBuilding = new Set();
+let adaptiveTimer = null;
+let publicPollTimer = null;
+let roomRefreshTimer = null;
+let rejoinInFlight = false;
+let chatIds = new Set();
+let channelVolume = new Map();
+let channelMuted = new Set();
 let soloClientId = null;
-
-let soundEnabled = localStorage.getItem('lnz_sounds') !== '0';
-let soundVolume = Number(localStorage.getItem('lnz_sound_volume') ?? '45') / 100;
 let audioContext = null;
+let audioPipeline = null;
+let avatarEdit = { dataUrl: '', x: 0, y: 0, zoom: 100 };
+let toastTimer = null;
 
-let avatarSource = currentAvatar || '/linozera-logo.png';
-let avatarX = 0;
-let avatarY = 0;
-let avatarZoom = 1;
+const socket = io({
+  transports: ['websocket', 'polling'],
+  reconnection: true,
+  reconnectionAttempts: Infinity,
+  reconnectionDelay: 700,
+  reconnectionDelayMax: 3500,
+  timeout: 12000
+});
 
-fetch('/api/config').then(r => r.json()).then(cfg => {
-  if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) rtcConfig = { iceServers: cfg.iceServers };
-}).catch(() => {});
-
-function normalizeRoom(value) {
-  return String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+function clamp(n, min, max) { return Math.max(min, Math.min(max, Number.isFinite(n) ? n : min)); }
+function normalizeRoom(v) {
+  const raw = String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
 }
-function formatRoom(value) {
-  const v = normalizeRoom(value);
-  return v.length > 4 ? `${v.slice(0, 4)}-${v.slice(4)}` : v;
-}
-function sanitizeNickname(value) {
-  return String(value || '').replace(/[<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
-}
-function safeAvatar(avatar) {
-  return avatar && avatar.startsWith('data:image/') ? avatar : '/linozera-logo.png';
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
 }
 function initials(name) {
-  return String(name || '?').trim().slice(0, 1).toUpperCase() || '?';
+  return String(name || 'L').trim().split(/\s+/).slice(0, 2).map(p => p[0]?.toUpperCase() || '').join('') || 'L';
 }
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch]));
+function avatarSrc(value) { return value || '/default-avatar.png'; }
+function timeLabel(ts) {
+  try { return new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); }
+  catch { return ''; }
 }
-function toast(message, timeout = 3000) {
-  const el = $('toast');
-  el.textContent = message;
-  el.classList.add('show');
-  clearTimeout(el._timer);
-  el._timer = setTimeout(() => el.classList.remove('show'), timeout);
-}
-function showModal(id) { $(id).classList.remove('hidden'); }
-function hideModal(id) { $(id).classList.add('hidden'); }
-function setRoomUrl(room) {
-  const url = new URL(location.href);
-  if (room) url.searchParams.set('room', formatRoom(room)); else url.searchParams.delete('room');
-  history.replaceState({}, '', url);
-}
-function roomInviteUrl() {
-  const url = new URL(location.href);
-  url.searchParams.set('room', formatRoom(currentRoom));
+function roomUrl(code = currentRoom) {
+  if (!code) return location.origin;
+  const url = new URL(location.origin);
+  url.searchParams.set('sala', normalizeRoom(code));
   return url.toString();
 }
-async function copyText(text, message = 'Copiado.') {
-  try { await navigator.clipboard.writeText(text); toast(message); }
-  catch { toast(text, 6000); }
+function ackEmit(event, payload = {}, timeout = 9000) {
+  return new Promise(resolve => {
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve({ ok: false, error: 'O servidor demorou para responder.' }); } }, timeout);
+    socket.emit(event, payload, response => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(response || { ok: false });
+    });
+  });
 }
-function requireNickname() {
-  const nickname = sanitizeNickname($('nicknameInput').value);
-  if (nickname.length < 2) {
-    $('homeError').textContent = 'Digite um apelido com pelo menos 2 caracteres.';
-    $('nicknameInput').focus();
-    return null;
-  }
-  currentNickname = nickname;
-  localStorage.setItem('lnz_nickname', nickname);
-  $('homeError').textContent = '';
-  return nickname;
+function toast(text, duration = 3200) {
+  if (!text) return;
+  clearTimeout(toastTimer);
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => el.classList.add('show'));
+  toastTimer = setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.classList.add('hidden'), 180); }, duration);
 }
-function updateNicknameCounter() {
-  const value = $('nicknameInput').value.slice(0, 24);
-  $('nickCount').textContent = `${value.length}/24`;
+function showModal(id) { $(id)?.classList.remove('hidden'); }
+function hideModal(id) { $(id)?.classList.add('hidden'); }
+function saveProfile() {
+  currentNickname = String($('nicknameInput')?.value || currentNickname || 'Linozera').trim().slice(0, 24) || 'Linozera';
+  localStorage.setItem(STORE.nickname, currentNickname);
+  if (currentAvatar) localStorage.setItem(STORE.avatar, currentAvatar); else localStorage.removeItem(STORE.avatar);
+  syncProfileUI();
 }
-function updateProfileImages() {
-  const src = currentAvatar || '/linozera-logo.png';
-  $('homeAvatarImg').src = src;
-  $('roomAvatarImg').src = src;
-  $('myNameLabel').textContent = currentNickname || 'Você';
+function syncProfileUI() {
+  if ($('nicknameInput')) $('nicknameInput').value = currentNickname;
+  if ($('nicknameCounter')) $('nicknameCounter').textContent = `${currentNickname.length}/24`;
+  for (const id of ['homeAvatar', 'sideAvatar', 'videoAvatar']) if ($(id)) $(id).src = avatarSrc(currentAvatar);
+  if ($('sideProfileName')) $('sideProfileName').textContent = currentNickname;
 }
 
-/* Sons interativos: são suspensos enquanto VOCÊ compartilha para não entrar no áudio capturado. */
-function ensureAudioContext() {
-  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+/* ---------- UI sounds: generated locally; disabled while presenting ---------- */
+async function getAudioContext() {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return null;
+  if (!audioContext) audioContext = new Ctx({ latencyHint: 'interactive' });
+  if (audioContext.state === 'suspended') {
+    try { await audioContext.resume(); } catch {}
+  }
   return audioContext;
 }
-function playUISound(type = 'tap') {
-  if (!soundEnabled || soundVolume <= 0 || localStream) return;
+async function playUiSound(kind = 'click') {
+  if (!uiSounds || localStream) return;
+  const ctx = await getAudioContext();
+  if (!ctx) return;
+  const now = ctx.currentTime;
+  const gain = ctx.createGain();
+  const osc = ctx.createOscillator();
+  const map = { click: [540, .035], join: [700, .09], leave: [300, .09], message: [850, .055], success: [760, .11], error: [190, .13], lock: [430, .08], update: [920, .12] };
+  const [freq, len] = map[kind] || map.click;
+  osc.frequency.setValueAtTime(freq, now);
+  osc.type = kind === 'error' ? 'sawtooth' : 'sine';
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.055, now + .008);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + len);
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(now); osc.stop(now + len + .02);
+}
+document.addEventListener('pointerdown', () => { if (audioContext?.state === 'suspended') audioContext.resume().catch(() => {}); }, { passive: true });
+
+/* ---------- startup ---------- */
+async function boot() {
+  syncProfileUI();
+  $('masterVolume').value = String(masterVolume);
+  $('masterVolumeLabel').textContent = `${Math.round(masterVolume)}%`;
+  $('settingsVolume').value = String(masterVolume);
+  $('settingsVolumeLabel').textContent = `${Math.round(masterVolume)}%`;
+  $('settingsUiSounds').checked = uiSounds;
+  $('settingsCompressor').checked = compressorEnabled;
+  $('settingsAutoChat').checked = autoChat;
+  $('settingsUpdates').checked = updateNotices;
+  $('settingsQuality').value = selectedQuality;
+  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
+  updateQualitySelection();
+
+  const fromUrl = normalizeRoom(new URLSearchParams(location.search).get('sala'));
+  if (fromUrl) $('roomInput').value = fromUrl;
+
   try {
-    const ctx = ensureAudioContext();
-    const map = {
-      tap:[420,0.045], join:[660,0.085], leave:[250,0.08], chat:[830,0.055],
-      start:[520,0.08], stop:[330,0.08], lock:[290,0.09], unlock:[720,0.08],
-      connected:[760,0.08], update:[920,0.12], error:[180,0.13]
-    };
-    const [freq, dur] = map[type] || map.tap;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = type === 'error' ? 'sawtooth' : 'sine';
-    osc.frequency.setValueAtTime(freq, ctx.currentTime);
-    gain.gain.setValueAtTime(Math.max(.0001, soundVolume * .075), ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(.0001, ctx.currentTime + dur);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(); osc.stop(ctx.currentTime + dur);
+    const response = await fetch('/api/config', { cache: 'no-store' });
+    if (response.ok) config = await response.json();
   } catch {}
-}
-document.addEventListener('pointerdown', () => { if (soundEnabled) ensureAudioContext(); }, { once: true });
 
-/* Lobby */
-async function loadPublicRooms() {
-  const grid = $('publicRoomsGrid');
-  try {
-    const data = await fetch('/api/public-rooms', { cache: 'no-store' }).then(r => r.json());
-    const list = Array.isArray(data.rooms) ? data.rooms : [];
-    if (!list.length) {
-      grid.innerHTML = '<div class="public-empty">Nenhuma sala pública ao vivo agora.</div>';
-      return;
-    }
-    grid.innerHTML = list.map(room => `
-      <article class="public-card" data-room="${escapeHtml(room.roomId)}">
-        <div class="public-thumb"><span class="live-badge">AO VIVO</span></div>
-        <div class="public-info">
-          <h3>${escapeHtml(room.roomId)}</h3>
-          <p>${escapeHtml(room.ownerName || 'Linozera')}</p>
-          <div class="public-stats"><span>♙ ${room.members}</span><span>◉ ${room.streaming} transmitindo</span></div>
-          <span class="privacy-badge">ENTRAR NA SALA →</span>
-        </div>
-      </article>`).join('');
-    $$('.public-card').forEach(card => card.addEventListener('click', () => {
-      $('roomInput').value = card.dataset.room;
-      $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }));
-  } catch {
-    grid.innerHTML = '<div class="public-empty">Não foi possível carregar as salas agora.</div>';
-  }
+  refreshPublicRooms();
+  clearInterval(publicPollTimer);
+  publicPollTimer = setInterval(refreshPublicRooms, 5000);
+  checkUpdates(false);
+  bindUi();
+  if (currentRoom) setConnectionText('Reconectando…', false);
 }
 
-function showRoom() {
-  $('home').classList.add('hidden');
-  $('roomView').classList.remove('hidden');
-  document.body.style.overflow = 'hidden';
-  updateProfileImages();
-}
-function showHome() {
-  $('roomView').classList.add('hidden');
-  $('home').classList.remove('hidden');
-  document.body.style.overflow = '';
-  loadPublicRooms();
-}
-
-function createRoom() {
-  const nickname = requireNickname();
-  if (!nickname) return;
-  playUISound('tap');
-  socket.emit('room:create', {
-    clientId,
-    nickname,
-    avatar: currentAvatar,
-    isPublic: $('publicToggle').checked
-  }, result => {
-    if (!result?.ok) return toast(result?.error || 'Não foi possível criar a sala.');
-    currentRoom = normalizeRoom(result.roomId);
-    ownerToken = result.ownerToken;
-    isOwner = true;
-    sessionStorage.setItem('lnz_owner_room', currentRoom);
-    sessionStorage.setItem('lnz_owner_token', ownerToken);
-    enterRoomFromAck(result);
+function bindUi() {
+  $('nicknameInput').addEventListener('input', e => {
+    currentNickname = e.target.value.slice(0, 24);
+    $('nicknameCounter').textContent = `${currentNickname.length}/24`;
   });
-}
-function joinRoom(value, fromReconnect = false) {
-  const nickname = fromReconnect ? currentNickname : requireNickname();
-  if (!nickname) return;
-  const roomId = normalizeRoom(value);
-  if (roomId.length !== 8) {
-    $('homeError').textContent = 'Digite um código de sala válido.';
-    return;
-  }
-  const savedRoom = normalizeRoom(sessionStorage.getItem('lnz_owner_room'));
-  const savedToken = sessionStorage.getItem('lnz_owner_token');
-  const tokenForRoom = savedRoom === roomId ? savedToken : null;
-  socket.emit('room:join', {
-    roomId,
-    clientId,
-    nickname,
-    avatar: currentAvatar,
-    ownerToken: tokenForRoom
-  }, result => {
-    if (!result?.ok) {
-      if (!fromReconnect) $('homeError').textContent = result?.error || 'Não foi possível entrar.';
-      if (result?.locked) playUISound('error');
-      if (!fromReconnect) showHome();
-      return;
-    }
-    currentRoom = normalizeRoom(result.roomId);
-    ownerToken = tokenForRoom || null;
-    isOwner = Boolean(result.owner);
-    enterRoomFromAck(result);
-  });
-}
-function enterRoomFromAck(result) {
-  $('homeError').textContent = '';
-  setRoomUrl(currentRoom);
-  const formatted = formatRoom(currentRoom);
-  $('topRoomCode').innerHTML = `CÓDIGO DA SALA &nbsp; <b>${formatted}</b> &nbsp; ▢`;
-  $('sideRoomCode').textContent = formatted;
-  showRoom();
-  applyRoomStatus(result.status || {});
-  if (!isOwner) viewerHostId = result.hostId || viewerHostId;
-  if (isOwner) knownViewers.clear();
-  playUISound('join');
-  if (localStream && isOwner) {
-    const q = QUALITY[selectedQuality] || QUALITY.auto;
-    socket.emit('room:stream', { active: true, quality: q.label, audio: localStream.getAudioTracks().length > 0 });
-  }
+  $('roomInput').addEventListener('input', e => { e.target.value = normalizeRoom(e.target.value); });
+
+  $('createRoomBtn').onclick = createRoom;
+  $('heroCreateBtn').onclick = () => { $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(createRoom, 250); };
+  $('joinBtn').onclick = () => joinRoom($('roomInput').value);
+  $('navEnterBtn').onclick = () => $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('exploreRoomsBtn').onclick = () => $('publicRoomsSection').scrollIntoView({ behavior: 'smooth' });
+  $('refreshPublicBtn').onclick = () => refreshPublicRooms(true);
+  $$('[data-scroll]').forEach(btn => btn.onclick = () => document.querySelector(btn.dataset.scroll)?.scrollIntoView({ behavior: 'smooth' }));
+
+  for (const id of ['homeAvatarBtn', 'editAvatarBtn', 'settingsEditAvatarBtn']) $(id).onclick = openAvatarEditor;
+  $('avatarFile').onchange = handleAvatarFile;
+  $('avatarZoom').oninput = e => { avatarEdit.zoom = Number(e.target.value); $('avatarZoomLabel').textContent = `${avatarEdit.zoom}%`; applyAvatarEditorTransform(); };
+  $$('[data-avatar-move]').forEach(btn => btn.onclick = () => moveAvatar(btn.dataset.avatarMove));
+  $('saveAvatarBtn').onclick = saveEditedAvatar;
+
+  $('copyTopCodeBtn').onclick = () => copyText(currentRoom, 'Código copiado.');
+  $('copyCodeBtn').onclick = () => copyText(currentRoom, 'Código copiado.');
+  $('copyLinkBtn').onclick = () => copyText(roomUrl(), 'Link do convite copiado.');
+  $('refreshRoomBtn').onclick = refreshRoomStatus;
+  $('lockBtn').onclick = toggleRoomLock;
+  $('roomSettingsBtn').onclick = () => openSettings('room');
+  $('settingsBtn').onclick = () => openSettings('general');
+
+  $('presentMainBtn').onclick = openShareModal;
+  $('presentDockBtn').onclick = openShareModal;
+  $('stopDockBtn').onclick = () => stopSharing(true);
+  $('qualityBtn').onclick = openShareModal;
+  $$('[data-quality]').forEach(btn => btn.onclick = () => { selectedQuality = btn.dataset.quality; localStorage.setItem(STORE.quality, selectedQuality); $('settingsQuality').value = selectedQuality; $('qualityDockLabel').textContent = QUALITY[selectedQuality].label; updateQualitySelection(); });
+  $('startShareBtn').onclick = () => localStream ? applyQualityLive() : startSharing();
+
+  $('masterVolume').oninput = e => setMasterVolume(e.target.value);
+  $('resetMixerBtn').onclick = () => { setMasterVolume(120); channelVolume.clear(); channelMuted.clear(); soloClientId = null; renderMixer(); };
+  $('collapseMixerBtn').onclick = () => $('mixerPanel').classList.toggle('collapsed');
+  $('mixerToggleBtn').onclick = () => { $('mixerPanel').classList.remove('collapsed'); $('mixerPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); };
+
+  $('chatToggleBtn').onclick = () => $('chatPanel').classList.toggle('chat-hidden');
+  $('closeChatBtn').onclick = () => $('chatPanel').classList.add('chat-hidden');
+  $('chatForm').onsubmit = sendChat;
+  $('fullscreenBtn').onclick = toggleFullscreen;
+  $('leaveRoomBtn').onclick = leaveRoom;
+
+  $$('.settings-tab').forEach(tab => tab.onclick = () => activateSettingsTab(tab.dataset.settingsTab));
+  $('settingsUiSounds').onchange = e => { uiSounds = e.target.checked; localStorage.setItem(STORE.sounds, String(uiSounds)); };
+  $('settingsAutoChat').onchange = e => { autoChat = e.target.checked; localStorage.setItem(STORE.autoChat, String(autoChat)); };
+  $('settingsVolume').oninput = e => setMasterVolume(e.target.value);
+  $('settingsCompressor').onchange = e => { compressorEnabled = e.target.checked; localStorage.setItem(STORE.compressor, String(compressorEnabled)); rebuildAudioPipeline(); };
+  $('settingsQuality').onchange = e => { selectedQuality = e.target.value; localStorage.setItem(STORE.quality, selectedQuality); $('qualityDockLabel').textContent = QUALITY[selectedQuality].label; updateQualitySelection(); if (localStream) applyQualityLive(); };
+  $('settingsRoomPublic').onchange = e => setRoomVisibility(e.target.checked);
+  $('settingsRoomLocked').onchange = e => setRoomLocked(e.target.checked);
+  $('settingsRefreshRoomBtn').onclick = refreshRoomStatus;
+  $('settingsCopyInviteBtn').onclick = () => copyText(roomUrl(), 'Convite copiado.');
+  $('settingsCloseRoomBtn').onclick = closeRoom;
+  $('settingsUpdates').onchange = e => { updateNotices = e.target.checked; localStorage.setItem(STORE.updates, String(updateNotices)); };
+  $('settingsCheckUpdateBtn').onclick = () => checkUpdates(true);
+  $('updateNowBtn').onclick = () => location.reload();
+  $('updateLaterBtn').onclick = () => $('updateBanner').classList.add('hidden');
+  $$('[data-close-modal]').forEach(btn => btn.onclick = () => hideModal(btn.dataset.closeModal));
+  $$('.modal').forEach(modal => modal.addEventListener('pointerdown', e => { if (e.target === modal) hideModal(modal.id); }));
 }
 
-/* Sala e membros */
-function applyRoomStatus(data) {
-  const oldLocked = roomLocked;
-  roomLocked = Boolean(data.locked);
-  roomPublic = Boolean(data.isPublic);
-  const next = new Map();
-  (Array.isArray(data.members) ? data.members : []).forEach(m => next.set(m.clientId, m));
-  members = next;
-  if (data.ownerClientId !== clientId) isOwner = false;
-  renderMembers();
-  renderRoomState();
-  syncStreamTiles();
-  renderMixer();
-  if (Array.isArray(data.chat)) data.chat.forEach(appendChatMessage);
-  cleanupPeersForMembers();
-  if (localStream && isOwner) ensureHostPeers();
-  if (oldLocked !== roomLocked && oldLocked !== undefined) playUISound(roomLocked ? 'lock' : 'unlock');
-}
-function renderRoomState() {
-  $('memberCount').textContent = String(members.size || 1);
-  $('topPeopleCount').textContent = String(members.size || 1);
-  const ownerOnly = $$('.owner-only');
-  ownerOnly.forEach(el => el.classList.toggle('hidden', !isOwner));
-  $('lockStateChip').textContent = roomLocked ? '🔒 Sala trancada' : '◈ Sala aberta';
-  $('roomPrivacyBadge').textContent = roomLocked ? '🔒 SALA TRANCADA' : (roomPublic ? '◉ SALA PÚBLICA' : '◈ SALA ABERTA');
-  $('lockBtn').innerHTML = roomLocked ? '🔓 &nbsp; Destrancar sala' : '🔒 &nbsp; Trancar sala';
-  [$('shareBtn'), $('emptyShareBtn'), $('qualityBtn')].forEach(el => { if (el) { el.disabled = !isOwner; el.classList.toggle('disabled', !isOwner); } });
-  if (!localStream) $('shareBtnLabel').textContent = isOwner ? 'Compartilhar tela' : 'Somente assistir';
-}
-
-function avatarMarkup(member, cls = 'member-avatar') {
-  const src = member.avatar;
-  if (src) return `<div class="${cls}"><img src="${src}" alt="" /><i class="online-dot"></i></div>`;
-  return `<div class="${cls}"><div class="fallback-avatar">${escapeHtml(initials(member.name))}</div><i class="online-dot"></i></div>`;
-}
-function renderMembers() {
-  const list = $('memberList');
-  list.innerHTML = '';
-  for (const member of members.values()) {
-    const row = document.createElement('div');
-    row.className = 'member';
-    row.innerHTML = `${avatarMarkup(member)}
-      <div class="member-copy">
-        <div class="member-name">${escapeHtml(member.name)} ${member.owner ? '<span class="owner-crown">♛</span>' : ''} ${member.clientId === clientId ? '<span class="you-badge">VOCÊ</span>' : ''}</div>
-        <div class="member-sub">${member.streaming ? '<span class="streaming-dot">● APRESENTANDO</span>' : (member.owner ? 'Dono da sala' : 'Na sala')}</div>
-      </div>`;
-    list.appendChild(row);
-  }
-}
-function findMemberBySocket(socketId) {
-  for (const member of members.values()) if (member.socketId === socketId) return member;
-  return null;
-}
-function toggleLock() {
-  if (!isOwner) return;
-  socket.emit('room:lock', { locked: !roomLocked }, result => {
-    if (!result?.ok) return toast(result?.error || 'Não foi possível alterar a sala.');
-    roomLocked = Boolean(result.locked);
-    renderRoomState();
-    playUISound(roomLocked ? 'lock' : 'unlock');
-  });
-}
-function closeRoom() {
-  if (!isOwner || !confirm('Encerrar a sala para todos?')) return;
-  socket.emit('room:close', {}, result => {
-    if (!result?.ok) toast(result?.error || 'Não foi possível encerrar.');
-  });
-}
-function leaveRoom() {
-  if (localStream) stopSharing(false);
-  socket.emit('room:leave');
-  resetRoomState();
-  showHome();
-  playUISound('leave');
-}
-function resetRoomState() {
-  closeAllPeers();
-  knownViewers.clear();
-  viewerHostId = null;
-  remoteStreams.clear();
-  members.clear();
-  chatIds.clear();
-  $('chatMessages').innerHTML = '<div class="chat-empty"><b>▢</b><strong>Nenhuma mensagem ainda</strong><span>Envie uma mensagem para a sala.</span></div>';
-  currentRoom = null;
-  isOwner = false;
-  roomLocked = false;
-  setRoomUrl(null);
-  syncStreamTiles();
-}
-
-/* WebRTC estável da V3: um transmissor principal (dono) -> espectadores */
-function closePeer(peerId) {
-  const pc = peers.get(peerId);
-  if (pc) {
-    pc.onicecandidate = null;
-    pc.ontrack = null;
-    pc.onconnectionstatechange = null;
-    try { pc.close(); } catch {}
-  }
-  peers.delete(peerId);
-  pendingIce.delete(peerId);
-}
-function closeAllPeers() {
-  [...peers.keys()].forEach(closePeer);
-}
-function cleanupPeersForMembers() {
-  const sockets = new Set([...members.values()].map(m => m.socketId).filter(Boolean));
-  for (const peerId of [...peers.keys()]) if (!sockets.has(peerId)) closePeer(peerId);
-  for (const viewerId of [...knownViewers]) if (!sockets.has(viewerId)) knownViewers.delete(viewerId);
-}
-function queueIce(peerId, candidate) {
-  const queue = pendingIce.get(peerId) || [];
-  queue.push(candidate);
-  pendingIce.set(peerId, queue);
-}
-async function flushIce(peerId, pc) {
-  const queue = pendingIce.get(peerId) || [];
-  pendingIce.delete(peerId);
-  for (const candidate of queue) {
-    try { await pc.addIceCandidate(candidate); } catch (err) { console.warn('ICE ignorado', err); }
-  }
-}
-function makePeer(peerId, mode) {
-  closePeer(peerId);
-  const pc = new RTCPeerConnection(rtcConfig);
-  peers.set(peerId, pc);
-  pc.onicecandidate = event => {
-    if (event.candidate) socket.emit('webrtc:ice', { target: peerId, candidate: event.candidate });
-  };
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      if (mode === 'viewer') toast('A conexão direta falhou. Configure um TURN no Render para redes restritas.', 4500);
-      closePeer(peerId);
-    }
-  };
-  return pc;
-}
-async function applySenderBitrate(pc) {
-  const cfg = QUALITY[selectedQuality] || QUALITY.auto;
-  for (const sender of pc.getSenders()) {
-    if (sender.track?.kind !== 'video') continue;
+/* ---------- public lobby ---------- */
+async function refreshPublicRooms(manual = false) {
+  let payload = null;
+  if (socket.connected) payload = await ackEmit('public-rooms:request', {}, 3500);
+  if (!payload?.ok) {
     try {
-      const params = sender.getParameters();
-      if (!params.encodings?.length) params.encodings = [{}];
-      params.encodings[0].maxBitrate = cfg.bitrate;
-      await sender.setParameters(params);
+      const response = await fetch(`/api/public-rooms?t=${Date.now()}`, { cache: 'no-store' });
+      if (response.ok) payload = { ok: true, ...(await response.json()) };
     } catch {}
   }
+  if (payload?.ok) {
+    renderPublicRooms(payload.rooms || []);
+    $('roomsUpdatedLabel').textContent = `Atualizado ${new Date(payload.at || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+    if (manual) toast('Lista de salas atualizada.');
+  } else if (manual) toast('Não foi possível atualizar as salas.');
 }
-async function applyQualityToLocalTrack() {
-  if (!localStream) return;
-  const cfg = QUALITY[selectedQuality] || QUALITY.auto;
-  const track = localStream.getVideoTracks()[0];
-  if (track) {
-    try {
-      await track.applyConstraints({
-        width: { ideal: cfg.width },
-        height: { ideal: cfg.height },
-        frameRate: { ideal: cfg.fps, max: cfg.fps }
-      });
-    } catch (err) { console.warn('Qualidade limitada pelo navegador/tela', err); }
+function renderPublicRooms(rooms) {
+  const grid = $('publicRoomsGrid');
+  if (!rooms.length) {
+    grid.innerHTML = `<div class="public-empty"><b>Nenhuma sala pública agora.</b><span>Quando alguém criar uma sala pública, ela aparecerá aqui automaticamente.</span></div>`;
+    return;
   }
-  if (isOwner) for (const pc of peers.values()) await applySenderBitrate(pc);
-  const self = members.get(clientId);
-  if (self) { self.quality = cfg.label; syncStreamTiles(); }
-  if (isOwner) socket.emit('room:stream', { active: true, quality: cfg.label, audio: localStream.getAudioTracks().length > 0 });
+  const thumbs = ['/public-thumb-1.png', '/public-thumb-2.png', '/public-thumb-3.png'];
+  grid.innerHTML = rooms.map((room, i) => {
+    const locked = Boolean(room.locked);
+    const live = Boolean(room.streaming);
+    const av = room.ownerAvatar ? `<img src="${room.ownerAvatar}" alt="" />` : `<span>${escapeHtml(initials(room.ownerName))}</span>`;
+    return `<article class="public-room-card ${locked ? 'locked' : ''}" data-room-code="${escapeHtml(room.roomId)}">
+      <div class="room-thumb"><img src="${thumbs[i % thumbs.length]}" alt="Prévia da sala" /><span class="live-badge ${live ? '' : 'idle'}">${live ? '● AO VIVO' : '○ AGUARDANDO'}</span></div>
+      <div class="public-room-info"><div><b>${escapeHtml(room.roomId)}</b><small><i class="tiny-avatar">${av}</i>${escapeHtml(room.ownerName || 'Linozera')}</small></div>
+      <div class="room-card-stats"><span>♧ ${room.members || 0}</span><span>${locked ? '🔒 Trancada' : '◇ Aberta'}</span><span>${escapeHtml(room.quality || 'Automático')}</span></div></div>
+    </article>`;
+  }).join('');
+  $$('.public-room-card').forEach(card => card.onclick = () => {
+    const room = rooms.find(r => r.roomId === card.dataset.roomCode);
+    if (room?.locked) return toast('Essa sala está trancada.');
+    $('roomInput').value = card.dataset.roomCode;
+    $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => joinRoom(card.dataset.roomCode), 250);
+  });
 }
-async function makeHostPeer(viewerId) {
-  if (!isOwner || !localStream || !viewerId || viewerId === socket.id) return;
-  knownViewers.add(viewerId);
-  const pc = makePeer(viewerId, 'host');
-  for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
-  try {
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    await applySenderBitrate(pc);
-    socket.emit('webrtc:offer', { target: viewerId, sdp: pc.localDescription });
-  } catch (error) {
-    console.error('Falha ao criar oferta', error);
-    closePeer(viewerId);
+
+/* ---------- rooms ---------- */
+async function createRoom() {
+  saveProfile();
+  if (!socket.connected) return toast('A conexão com o servidor ainda não está pronta.');
+  const res = await ackEmit('room:create', { clientId, nickname: currentNickname, avatar: currentAvatar, isPublic: $('homePublicToggle').checked });
+  if (!res.ok) return toast(res.error || 'Não foi possível criar a sala.');
+  ownerToken = res.ownerToken || '';
+  isOwner = true;
+  enterRoom(res.roomId, res.status);
+  playUiSound('success');
+}
+async function joinRoom(code, silent = false) {
+  saveProfile();
+  const roomId = normalizeRoom(code || $('roomInput').value);
+  if (roomId.replace('-', '').length !== 8) return toast('Digite um código de sala válido.');
+  if (!socket.connected) return toast('A conexão com o servidor ainda não está pronta.');
+  const storedOwnerRoom = normalizeRoom(sessionStorage.getItem('lnz_v5_owner_room'));
+  const token = storedOwnerRoom === roomId ? (sessionStorage.getItem('lnz_v5_owner_token') || '') : '';
+  const res = await ackEmit('room:join', { roomId, clientId, nickname: currentNickname, avatar: currentAvatar, ownerToken: token });
+  if (!res.ok) return silent ? null : toast(res.error || 'Não foi possível entrar na sala.');
+  isOwner = Boolean(res.owner);
+  ownerToken = res.ownerToken || (isOwner ? token : '');
+  enterRoom(res.roomId, res.status, silent);
+  return res;
+}
+function enterRoom(roomId, status, silent = false) {
+  currentRoom = normalizeRoom(roomId);
+  roomStatus = status || roomStatus;
+  sessionStorage.setItem('lnz_v5_room', currentRoom);
+  sessionStorage.setItem('lnz_v5_is_owner', String(isOwner));
+  if (isOwner && ownerToken) {
+    sessionStorage.setItem('lnz_v5_owner_room', currentRoom);
+    sessionStorage.setItem('lnz_v5_owner_token', ownerToken);
   }
+  const url = new URL(location.href); url.searchParams.set('sala', currentRoom); history.replaceState({}, '', url);
+  $('homeView').classList.add('hidden');
+  $('roomView').classList.remove('hidden');
+  if (autoChat) $('chatPanel').classList.remove('chat-hidden');
+  applyOwnerClasses();
+  applyRoomStatus(roomStatus);
+  setConnectionText('Conectado', true);
+  clearInterval(roomRefreshTimer);
+  roomRefreshTimer = setInterval(() => { if (currentRoom && socket.connected) refreshRoomStatus(false); }, 12_000);
+  if (!silent) { toast(isOwner ? 'Sala criada. Você é o dono.' : 'Você entrou na sala.'); playUiSound('join'); }
+  if (!isOwner && ownerMember()?.streaming) requestHostStream();
 }
-function ensureHostPeers() {
-  if (!isOwner || !localStream) return;
-  for (const member of members.values()) {
-    if (member.clientId === clientId || !member.socketId) continue;
-    knownViewers.add(member.socketId);
-    if (!peers.has(member.socketId)) makeHostPeer(member.socketId);
+function clearRoomSession() {
+  const wasRoom = currentRoom;
+  currentRoom = '';
+  ownerToken = '';
+  isOwner = false;
+  roomStatus = null;
+  sessionStorage.removeItem('lnz_v5_room');
+  sessionStorage.removeItem('lnz_v5_is_owner');
+  if (!wasRoom || normalizeRoom(sessionStorage.getItem('lnz_v5_owner_room')) === normalizeRoom(wasRoom)) {
+    sessionStorage.removeItem('lnz_v5_owner_room');
+    sessionStorage.removeItem('lnz_v5_owner_token');
   }
+  const url = new URL(location.href); url.searchParams.delete('sala'); history.replaceState({}, '', url.pathname + url.search);
 }
-function ownerInRoom() {
-  return [...members.values()].find(m => m.owner) || null;
+async function leaveRoom() {
+  if (!currentRoom) return;
+  if (isOwner && !confirm('Ao sair como dono, a sala será encerrada para todos. Deseja sair?')) return;
+  stopSharing(false);
+  await ackEmit('room:leave', {}, 3000);
+  resetRoomUi();
+  toast('Você saiu da sala.');
+  playUiSound('leave');
 }
-function ensureViewerPeer(hostId) {
-  let pc = peers.get(hostId);
-  if (pc) return pc;
-  pc = makePeer(hostId, 'viewer');
-  pc.ontrack = event => {
-    const stream = event.streams?.[0] || new MediaStream([event.track]);
-    const host = findMemberBySocket(hostId) || ownerInRoom();
-    const hostClientId = host?.clientId || 'host';
-    viewerHostId = hostId;
-    remoteStreams.clear();
-    remoteStreams.set(hostClientId, { stream, socketId: hostId });
-    if (host) { host.streaming = true; host.audio = stream.getAudioTracks().length > 0; }
-    syncStreamTiles();
-    renderMixer();
-    const video = document.querySelector(`.stream-tile[data-client-id="${CSS.escape(hostClientId)}"] video`);
-    if (video) video.play().catch(() => toast('Clique na página para liberar o áudio da transmissão.'));
+async function closeRoom() {
+  if (!isOwner || !currentRoom) return;
+  if (!confirm('Encerrar esta sala para todos os participantes?')) return;
+  const res = await ackEmit('room:close', {});
+  if (!res.ok) return toast(res.error || 'Não foi possível encerrar a sala.');
+  resetRoomUi();
+}
+function resetRoomUi() {
+  clearInterval(roomRefreshTimer); roomRefreshTimer = null;
+  stopSharing(false);
+  closeAllPeers();
+  resetRemoteMedia();
+  disposeAudioPipeline();
+  chatIds.clear();
+  $('chatMessages').innerHTML = `<div class="chat-empty"><span>▢</span><b>Nenhuma mensagem ainda</b><small>Envie uma mensagem para a sala.</small></div>`;
+  clearRoomSession();
+  $('roomView').classList.add('hidden');
+  $('homeView').classList.remove('hidden');
+  refreshPublicRooms();
+}
+async function refreshRoomStatus(showToast = true) {
+  if (!currentRoom || !socket.connected) return;
+  const res = await ackEmit('room:status:request', {}, 4500);
+  if (res.ok) { applyRoomStatus(res.status); if (showToast) toast('Sala atualizada.'); }
+  else if (showToast) toast(res.error || 'Não foi possível atualizar a sala.');
+}
+function applyRoomStatus(status) {
+  if (!status) return;
+  roomStatus = status;
+  const members = status.members || [];
+  $('topRoomCode').textContent = status.roomId || currentRoom;
+  $('sideRoomCode').textContent = status.roomId || currentRoom;
+  $('topPeopleCount').textContent = `♧ ${members.length}`;
+  $('participantCount').textContent = `(${members.length})`;
+  $('topRoomPrivacy').textContent = status.isPublic ? '◇ Sala pública' : '🔒 Sala privada';
+  $('sideVisibilityBadge').textContent = status.isPublic ? '● SALA PÚBLICA' : '● SALA PRIVADA';
+  $('sideVisibilityBadge').classList.toggle('private', !status.isPublic);
+  $('sideLockText').textContent = status.locked ? 'Trancada' : 'Aberta';
+  $('lockBtn').textContent = status.locked ? '🔓 Destrancar sala' : '🔒 Trancar sala';
+  $('settingsRoomPublic').checked = Boolean(status.isPublic);
+  $('settingsRoomLocked').checked = Boolean(status.locked);
+  $('roomSettingsUnavailable').classList.add('hidden');
+  $('roomSettingsControls').classList.remove('hidden');
+  renderParticipants(members);
+  renderChat(status.chat || []);
+  renderStage();
+  renderMixer();
+  applyOwnerClasses();
+  const owner = ownerMember();
+  if (!isOwner && owner?.streaming && !hasLiveRemoteVideo()) requestHostStream();
+}
+function ownerMember() { return roomStatus?.members?.find(m => m.clientId === roomStatus.ownerClientId) || null; }
+function meMember() { return roomStatus?.members?.find(m => m.clientId === clientId) || null; }
+function applyOwnerClasses() {
+  document.body.classList.toggle('is-owner', Boolean(isOwner));
+  document.body.classList.toggle('is-viewer', Boolean(currentRoom && !isOwner));
+  $$('.owner-only').forEach(el => el.classList.toggle('role-hidden', !isOwner));
+  $$('.viewer-only').forEach(el => el.classList.toggle('role-hidden', isOwner));
+}
+function renderParticipants(members) {
+  $('participantsList').innerHTML = members.map(member => {
+    const avatar = member.avatar ? `<img src="${member.avatar}" alt="" />` : `<span>${escapeHtml(initials(member.name))}</span>`;
+    return `<div class="participant ${member.streaming ? 'presenting' : ''}"><div class="participant-avatar">${avatar}<i></i></div><div class="participant-text"><b>${escapeHtml(member.name)} ${member.owner ? '<em>♛</em>' : ''}</b><small>${member.clientId === clientId ? 'Você' : (member.streaming ? 'Apresentando' : 'Na sala')}</small></div><span class="participant-state">${member.streaming ? '▥' : '·'}</span></div>`;
+  }).join('');
+}
+async function toggleRoomLock() { if (isOwner) setRoomLocked(!roomStatus?.locked); }
+async function setRoomLocked(locked) {
+  const res = await ackEmit('room:lock', { locked });
+  if (!res.ok) { $('settingsRoomLocked').checked = Boolean(roomStatus?.locked); return toast(res.error || 'Não foi possível alterar a sala.'); }
+  playUiSound('lock');
+}
+async function setRoomVisibility(isPublic) {
+  const res = await ackEmit('room:visibility', { isPublic });
+  if (!res.ok) { $('settingsRoomPublic').checked = Boolean(roomStatus?.isPublic); return toast(res.error || 'Não foi possível alterar a visibilidade.'); }
+  toast(isPublic ? 'A sala agora aparece no lobby.' : 'A sala foi removida do lobby.');
+}
+
+/* ---------- WebRTC: stable single presenter ---------- */
+function rtcConfiguration() {
+  return { iceServers: config.iceServers || [], iceCandidatePoolSize: 6, bundlePolicy: 'max-bundle' };
+}
+function queueIce(peerId, candidate) {
+  const q = pendingIce.get(peerId) || []; q.push(candidate); pendingIce.set(peerId, q);
+}
+async function flushIce(peerId, pc) {
+  const q = pendingIce.get(peerId) || []; pendingIce.delete(peerId);
+  for (const candidate of q) { try { await pc.addIceCandidate(candidate); } catch {} }
+}
+function closePeer(peerId) {
+  const timer = peerRecovery.get(peerId); if (timer) clearTimeout(timer); peerRecovery.delete(peerId);
+  const pc = peers.get(peerId);
+  if (pc) { try { pc.onicecandidate = null; pc.ontrack = null; pc.close(); } catch {} }
+  peers.delete(peerId); pendingIce.delete(peerId); hostBuilding.delete(peerId);
+}
+function closeAllPeers() { [...peers.keys()].forEach(closePeer); stopAdaptiveMonitor(); }
+function schedulePeerRecovery(peerId, role, delay = 1800) {
+  if (!currentRoom || peerRecovery.has(peerId)) return;
+  const timer = setTimeout(() => {
+    peerRecovery.delete(peerId);
+    if (!currentRoom || !socket.connected) return;
+    if (role === 'host' && isOwner && localStream) createHostPeer(peerId, true);
+    if (role === 'viewer' && !isOwner) requestHostStream(true);
+  }, delay);
+  peerRecovery.set(peerId, timer);
+}
+function newPeer(peerId, role) {
+  // ICE can arrive a few milliseconds before the SDP offer. Preserve that queue
+  // while replacing an older peer so the viewer does not end up connected with black video.
+  const earlyIce = pendingIce.get(peerId) || [];
+  closePeer(peerId);
+  if (earlyIce.length) pendingIce.set(peerId, earlyIce);
+  const pc = new RTCPeerConnection(rtcConfiguration());
+  peers.set(peerId, pc);
+  pc.onicecandidate = e => { if (e.candidate) socket.emit('webrtc:ice', { target: peerId, candidate: e.candidate }); };
+  const watch = () => {
+    const state = pc.connectionState;
+    const ice = pc.iceConnectionState;
+    if (state === 'failed' || ice === 'failed') schedulePeerRecovery(peerId, role, 300);
+    else if (state === 'disconnected' || ice === 'disconnected') schedulePeerRecovery(peerId, role, 2200);
+    else if (state === 'connected' || ice === 'connected' || ice === 'completed') {
+      const t = peerRecovery.get(peerId); if (t) clearTimeout(t); peerRecovery.delete(peerId);
+    }
   };
+  pc.onconnectionstatechange = watch; pc.oniceconnectionstatechange = watch;
   return pc;
 }
-async function startSharing() {
-  if (!currentRoom || localStream) return;
-  if (!isOwner) return toast('Na transmissão estável da V3, somente o dono da sala apresenta a tela.');
-  if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não suporta compartilhamento de tela.');
-  const cfg = QUALITY[selectedQuality] || QUALITY.auto;
+async function createHostPeer(viewerSocketId, iceRestart = false) {
+  if (!isOwner || !localStream || !viewerSocketId || viewerSocketId === socket.id || hostBuilding.has(viewerSocketId)) return;
+  hostBuilding.add(viewerSocketId);
   try {
-    // Mantém o motor V3, mas preserva a proteção contra retorno solicitada.
-    // Nunca pedimos microfone/câmera. A prévia local fica muda e o Chrome é orientado a não capturar o áudio geral do sistema.
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: cfg.fps, max: cfg.fps } },
-      audio: true,
-      selfBrowserSurface: 'exclude',
-      surfaceSwitching: 'include',
-      systemAudio: 'exclude',
-      windowAudio: 'window',
-      preferCurrentTab: false
-    });
-    localStream = stream;
-    const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar, owner: true };
-    self.streaming = true;
-    self.quality = cfg.label;
-    self.audio = stream.getAudioTracks().length > 0;
-    members.set(clientId, self);
-    $('shareBtnLabel').textContent = 'Parar apresentação';
-    $('shareBtn').classList.add('stop');
-    syncStreamTiles();
-    await applyQualityToLocalTrack();
-    socket.emit('room:stream', { active: true, quality: cfg.label, audio: self.audio });
-    for (const viewerId of knownViewers) makeHostPeer(viewerId);
-    ensureHostPeers();
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
-    toast(self.audio ? 'Transmissão iniciada com áudio da janela/aba escolhida.' : 'Transmissão iniciada sem áudio.');
+    const pc = newPeer(viewerSocketId, 'host');
+    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+    const offer = await pc.createOffer(iceRestart ? { iceRestart: true } : undefined);
+    await pc.setLocalDescription(offer);
+    await tuneSender(pc, viewerSocketId);
+    socket.emit('webrtc:offer', { target: viewerSocketId, description: pc.localDescription });
   } catch (err) {
-    if (!['NotAllowedError', 'AbortError'].includes(err?.name)) {
-      console.error(err);
-      toast('Não foi possível iniciar a transmissão.');
-      playUISound('error');
+    console.error('Oferta WebRTC falhou', err);
+    closePeer(viewerSocketId);
+    schedulePeerRecovery(viewerSocketId, 'host');
+  } finally { hostBuilding.delete(viewerSocketId); }
+}
+function resetRemoteMedia() {
+  if (remoteStream) {
+    try { remoteStream.getTracks().forEach(t => { t.onunmute = null; t.onended = null; }); } catch {}
+  }
+  remoteStream = null; remoteHostSocketId = null; attachedRemoteAt = 0;
+  if ($('stageVideo')) { try { $('stageVideo').pause(); $('stageVideo').srcObject = null; } catch {} }
+}
+function ensureRemoteStream() { if (!remoteStream) remoteStream = new MediaStream(); return remoteStream; }
+function mergeRemoteTrackEvent(event, from) {
+  const stream = ensureRemoteStream();
+  remoteHostSocketId = from;
+  const candidates = event.streams?.[0]?.getTracks?.() || [event.track];
+  for (const track of candidates) {
+    if (!track || stream.getTracks().some(t => t.id === track.id)) continue;
+    // Keep one live track of each kind; a renegotiation replaces the old one cleanly.
+    for (const old of stream.getTracks().filter(t => t.kind === track.kind && t.id !== track.id)) stream.removeTrack(old);
+    stream.addTrack(track);
+    track.onunmute = () => { attachStageStream(stream, false); renderStage(); };
+    track.onended = () => { try { stream.removeTrack(track); } catch {} renderStage(); };
+  }
+  attachedRemoteAt = Date.now();
+  attachStageStream(stream, false);
+  rebuildAudioPipeline();
+  renderStage();
+}
+function createViewerPeer(hostSocketId) {
+  const pc = newPeer(hostSocketId, 'viewer');
+  pc.ontrack = event => mergeRemoteTrackEvent(event, hostSocketId);
+  return pc;
+}
+async function requestHostStream(force = false) {
+  if (isOwner || !currentRoom || !socket.connected) return;
+  if (!force && [...peers.values()].some(pc => ['new', 'connecting', 'connected'].includes(pc.connectionState))) return;
+  const res = await ackEmit('viewer:request-stream', {}, 3500);
+  if (!res?.active && force) toast('Aguardando o transmissor iniciar a tela.');
+}
+function hasLiveRemoteVideo() { return Boolean(remoteStream?.getVideoTracks().some(t => t.readyState === 'live')); }
+function attachStageStream(stream, local) {
+  const video = $('stageVideo');
+  if (!video || !stream) return;
+  video.muted = true; // áudio remoto passa pelo mixer; local nunca volta para o transmissor.
+  video.playsInline = true; video.autoplay = true;
+  if (video.srcObject !== stream) {
+    try { video.pause(); } catch {}
+    video.srcObject = stream;
+  }
+  const play = () => video.play().catch(() => {});
+  video.onloadedmetadata = play;
+  video.oncanplay = play;
+  requestAnimationFrame(play);
+  if (local) video.setAttribute('aria-label', 'Prévia local muda');
+}
+async function safeGetDisplayMedia() {
+  const q = QUALITY[selectedQuality] || QUALITY.auto;
+  const video = { width: { ideal: q.width }, height: { ideal: q.height }, frameRate: { ideal: q.fps, max: q.fps } };
+  const preferred = {
+    video,
+    audio: { restrictOwnAudio: true },
+    selfBrowserSurface: 'exclude',
+    surfaceSwitching: 'include',
+    systemAudio: 'exclude',
+    windowAudio: 'window',
+    preferCurrentTab: false
+  };
+  try { return await navigator.mediaDevices.getDisplayMedia(preferred); }
+  catch (err) {
+    if (err?.name !== 'TypeError') throw err;
+    return navigator.mediaDevices.getDisplayMedia({ video, audio: true });
+  }
+}
+async function startSharing() {
+  if (!isOwner || !currentRoom || localStream) return;
+  if (!navigator.mediaDevices?.getDisplayMedia) return toast('Este navegador não suporta compartilhamento de tela.');
+  try {
+    const stream = await safeGetDisplayMedia();
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) { stream.getTracks().forEach(t => t.stop()); throw new Error('Nenhuma faixa de vídeo foi recebida.'); }
+    const surface = videoTrack.getSettings?.().displaySurface || '';
+    videoTrack.contentHint = (QUALITY[selectedQuality]?.fps || 30) >= 50 ? 'motion' : 'detail';
+    // Monitor/tela inteira pode carregar Discord e a própria voz. Remover áudio é a forma segura.
+    if (surface === 'monitor') {
+      for (const track of [...stream.getAudioTracks()]) { stream.removeTrack(track); track.stop(); }
+      toast('Tela inteira: áudio removido para impedir retorno. Use Aba/Janela para transmitir som.', 5200);
     }
+    for (const track of stream.getAudioTracks()) { try { track.contentHint = 'music'; } catch {} }
+    localStream = stream;
+    videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
+    videoTrack.addEventListener('mute', () => toast('O Windows/navegador pausou a captura.'), { passive: true });
+    attachStageStream(localStream, true);
+    hideModal('shareModal');
+    setShareButtons(true);
+    renderStage();
+    disposeAudioPipeline();
+    const q = QUALITY[selectedQuality] || QUALITY.auto;
+    await ackEmit('room:stream', { active: true, quality: q.label, audio: stream.getAudioTracks().length > 0 }, 4000);
+    for (const member of roomStatus?.members || []) if (member.socketId && member.clientId !== clientId) createHostPeer(member.socketId);
+    startAdaptiveMonitor();
+    playUiSound('success');
+  } catch (err) {
+    if (!['NotAllowedError', 'AbortError'].includes(err?.name)) { console.error(err); toast('Não foi possível iniciar a transmissão. Tente escolher a tela novamente.'); playUiSound('error'); }
   }
 }
 function stopSharing(notify = true) {
   if (!localStream) return;
-  localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
+  stopAdaptiveMonitor();
+  localStream.getTracks().forEach(t => { try { t.stop(); } catch {} });
   localStream = null;
   closeAllPeers();
-  const self = members.get(clientId);
-  if (self) { self.streaming = false; self.audio = false; }
-  $('shareBtnLabel').textContent = 'Compartilhar tela';
-  $('shareBtn').classList.remove('stop');
-  if (socket.connected && currentRoom && isOwner) socket.emit('room:stream', { active: false, quality: QUALITY[selectedQuality].label, audio: false });
-  syncStreamTiles();
-  renderMixer();
-  if (notify) { toast('Transmissão encerrada.'); playUISound('stop'); }
+  setShareButtons(false);
+  if (currentRoom && isOwner && socket.connected) socket.emit('room:stream', { active: false, quality: QUALITY[selectedQuality].label, audio: false });
+  renderStage(); renderMixer();
+  if (notify) { toast('Apresentação encerrada.'); playUiSound('leave'); }
 }
+function setShareButtons(active) {
+  $('presentDockBtn').classList.toggle('hidden', active);
+  $('stopDockBtn').classList.toggle('hidden', !active);
+  $('presentMainBtn').classList.toggle('hidden', active);
+}
+async function applyQualityLive() {
+  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
+  updateQualitySelection();
+  hideModal('shareModal');
+  if (!localStream) return;
+  for (const [id, pc] of peers) await tuneSender(pc, id);
+  socket.emit('room:stream', { active: true, quality: QUALITY[selectedQuality].label, audio: localStream.getAudioTracks().length > 0 });
+  toast(`Qualidade de envio: ${QUALITY[selectedQuality].label}. A captura não foi redimensionada.`);
+}
+function updateQualitySelection() {
+  $$('[data-quality]').forEach(btn => btn.classList.toggle('selected', btn.dataset.quality === selectedQuality));
+  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
+  if ($('startShareBtn')) $('startShareBtn').textContent = localStream ? 'Aplicar sem reiniciar a tela' : 'Continuar e escolher tela';
+}
+async function tuneSender(pc, peerId) {
+  if (!pc) return;
+  const q = QUALITY[selectedQuality] || QUALITY.auto;
+  let bitrate = q.bitrate;
+  let fps = q.fps;
+  if (selectedQuality === 'auto') {
+    const viewers = Math.max(1, (roomStatus?.members?.length || 1) - 1);
+    if (viewers >= 5) bitrate = Math.min(bitrate, 1_500_000);
+    else if (viewers >= 3) bitrate = Math.min(bitrate, 2_200_000);
+    else if (viewers >= 2) bitrate = Math.min(bitrate, 3_000_000);
+    try {
+      const stats = await pc.getStats();
+      let available = NaN, rtt = 0, loss = 0;
+      stats.forEach(r => {
+        if (r.type === 'candidate-pair' && r.state === 'succeeded' && Number.isFinite(r.availableOutgoingBitrate)) available = r.availableOutgoingBitrate;
+        if (r.type === 'candidate-pair' && Number.isFinite(r.currentRoundTripTime)) rtt = Math.max(rtt, r.currentRoundTripTime);
+        if (r.type === 'remote-inbound-rtp' && r.kind === 'video' && Number.isFinite(r.fractionLost)) loss = Math.max(loss, r.fractionLost);
+      });
+      if (Number.isFinite(available) && available > 0) bitrate = Math.min(bitrate, Math.max(650_000, available * .72));
+      if (loss > .08 || rtt > .4) { bitrate = Math.min(bitrate, 1_800_000); fps = Math.min(fps, 24); }
+      if (loss > .16 || rtt > .75) { bitrate = Math.min(bitrate, 950_000); fps = Math.min(fps, 18); }
+    } catch {}
+  }
+  for (const sender of pc.getSenders()) {
+    if (!sender.track) continue;
+    try {
+      const p = sender.getParameters(); p.encodings ||= [{}];
+      if (sender.track.kind === 'video') {
+        p.encodings[0].maxBitrate = Math.round(bitrate);
+        p.encodings[0].maxFramerate = fps;
+        p.degradationPreference = 'balanced';
+      } else p.encodings[0].maxBitrate = 160_000;
+      await sender.setParameters(p);
+    } catch {}
+  }
+}
+function startAdaptiveMonitor() {
+  stopAdaptiveMonitor();
+  if (!isOwner || !localStream || selectedQuality !== 'auto') return;
+  adaptiveTimer = setInterval(() => { for (const [id, pc] of peers) if (pc.connectionState === 'connected') tuneSender(pc, id); }, 4500);
+}
+function stopAdaptiveMonitor() { if (adaptiveTimer) clearInterval(adaptiveTimer); adaptiveTimer = null; }
 
-socket.on('viewer:joined', ({ viewerId }) => {
-  if (!isOwner || !viewerId) return;
-  knownViewers.add(viewerId);
-  if (localStream) makeHostPeer(viewerId);
-});
-socket.on('viewer:left', ({ viewerId }) => {
-  if (!viewerId) return;
-  knownViewers.delete(viewerId);
-  closePeer(viewerId);
-});
-socket.on('host:stream', ({ active, quality, audio }) => {
-  if (isOwner) return;
-  const host = ownerInRoom();
-  if (host) {
-    host.streaming = Boolean(active);
-    host.quality = quality || host.quality;
-    host.audio = Boolean(audio && active);
+/* Black-screen watchdog: recovers only when video track exists but no decoded dimensions. */
+setInterval(() => {
+  if (!currentRoom || isOwner || !ownerMember()?.streaming || !hasLiveRemoteVideo()) return;
+  const video = $('stageVideo');
+  if (!video || Date.now() - attachedRemoteAt < 4500) return;
+  const black = video.videoWidth === 0 || video.videoHeight === 0;
+  if (black && Date.now() - lastBlackRecovery > 10_000) {
+    lastBlackRecovery = Date.now();
+    toast('Recuperando o vídeo da transmissão…');
+    closeAllPeers(); resetRemoteMedia(); requestHostStream(true);
   }
-  if (!active) {
-    if (viewerHostId) closePeer(viewerHostId);
-    viewerHostId = null;
-    remoteStreams.clear();
+}, 2500);
+
+/* ---------- stream/server events ---------- */
+socket.on('connect', async () => {
+  setConnectionText('Conectado', true);
+  refreshPublicRooms();
+  if (currentRoom && !rejoinInFlight) {
+    rejoinInFlight = true;
+    try {
+      const res = await ackEmit('room:join', { roomId: currentRoom, clientId, nickname: currentNickname, avatar: currentAvatar, ownerToken }, 7000);
+      if (res.ok) {
+        isOwner = Boolean(res.owner); if (res.ownerToken) ownerToken = res.ownerToken;
+        enterRoom(res.roomId, res.status, true);
+        if (!isOwner && ownerMember()?.streaming) requestHostStream(true);
+      } else { toast(res.error || 'A sala foi encerrada.'); resetRoomUi(); }
+    } finally { rejoinInFlight = false; }
   }
-  syncStreamTiles();
-  renderMixer();
 });
-socket.on('host:reconnecting', () => {
-  if (!isOwner) toast('O transmissor está se reconectando…');
-});
-socket.on('host:restored', ({ hostId }) => {
+socket.on('disconnect', () => setConnectionText('Reconectando…', false));
+socket.on('connect_error', () => setConnectionText('Sem conexão', false));
+socket.on('public-rooms:list', payload => { if (payload?.rooms) { renderPublicRooms(payload.rooms); $('roomsUpdatedLabel').textContent = 'Atualizado agora'; } });
+socket.on('room:status', status => { if (currentRoom) applyRoomStatus(status); });
+socket.on('member:joined', member => { if (isOwner && localStream && member?.socketId) createHostPeer(member.socketId); playUiSound('join'); });
+socket.on('member:left', () => playUiSound('leave'));
+socket.on('room:closed', () => { toast('A sala foi encerrada pelo dono.'); resetRoomUi(); });
+socket.on('session:replaced', () => { toast('Esta sessão foi aberta em outra aba/dispositivo.'); resetRoomUi(); });
+socket.on('host:stream', ({ active }) => {
   if (isOwner) return;
-  closeAllPeers();
-  remoteStreams.clear();
-  viewerHostId = hostId || null;
-  syncStreamTiles();
+  if (!active) { closeAllPeers(); resetRemoteMedia(); disposeAudioPipeline(); renderStage(); }
+  else requestHostStream(true);
 });
-socket.on('webrtc:offer', async ({ from, sdp }) => {
-  if (isOwner || !from || !sdp) return;
-  viewerHostId = from;
-  const pc = ensureViewerPeer(from);
+socket.on('host:reconnected', () => { if (!isOwner) { closeAllPeers(); resetRemoteMedia(); setTimeout(() => requestHostStream(true), 500); } });
+socket.on('viewer:ready', ({ viewerId }) => { if (isOwner && localStream && viewerId) createHostPeer(viewerId); });
+socket.on('viewer:left', ({ viewerId }) => { if (viewerId) closePeer(viewerId); });
+socket.on('webrtc:offer', async ({ from, description }) => {
+  if (isOwner || !from || !description) return;
+  remoteHostSocketId = from;
+  resetRemoteMedia();
+  const pc = createViewerPeer(from);
   try {
-    await pc.setRemoteDescription(sdp);
+    await pc.setRemoteDescription(description);
     await flushIce(from, pc);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    socket.emit('webrtc:answer', { target: from, sdp: pc.localDescription });
-  } catch (error) {
-    console.error('Falha ao responder oferta', error);
-    closePeer(from);
-  }
+    socket.emit('webrtc:answer', { target: from, description: pc.localDescription });
+  } catch (err) { console.error('Resposta WebRTC falhou', err); closePeer(from); schedulePeerRecovery(from, 'viewer'); }
 });
-socket.on('webrtc:answer', async ({ from, sdp }) => {
-  if (!isOwner) return;
-  const pc = peers.get(from);
-  if (!pc) return;
-  try { await pc.setRemoteDescription(sdp); await flushIce(from, pc); }
-  catch (error) { console.error('Falha ao aplicar resposta', error); }
+socket.on('webrtc:answer', async ({ from, description }) => {
+  if (!isOwner || !from || !description) return;
+  const pc = peers.get(from); if (!pc) return;
+  try { await pc.setRemoteDescription(description); await flushIce(from, pc); }
+  catch { schedulePeerRecovery(from, 'host'); }
 });
 socket.on('webrtc:ice', async ({ from, candidate }) => {
   if (!from || !candidate) return;
-  let pc = peers.get(from);
-  if (!pc && !isOwner) pc = ensureViewerPeer(from);
-  if (!pc) return;
-  if (!pc.remoteDescription) return queueIce(from, candidate);
-  try { await pc.addIceCandidate(candidate); } catch (error) { console.warn('ICE não aplicado', error); }
+  const pc = peers.get(from);
+  if (!pc || !pc.remoteDescription) return queueIce(from, candidate);
+  try { await pc.addIceCandidate(candidate); } catch {}
 });
+socket.on('chat:message', message => { appendChat(message); if (message?.clientId !== clientId) playUiSound('message'); });
 
-/* Grade e mix */
-function getStreamingMembers() {
-  return [...members.values()].filter(m => m.streaming || (m.clientId === clientId && localStream));
-}
-function ensureTile(member) {
-  const stage = $('streamStage');
-  let tile = stage.querySelector(`.stream-tile[data-client-id="${CSS.escape(member.clientId)}"]`);
-  if (!tile) {
-    tile = document.createElement('article');
-    tile.className = 'stream-tile';
-    tile.dataset.clientId = member.clientId;
-    tile.innerHTML = `
-      <div class="tile-top"><span class="quality-pill"></span><span class="local-pill hidden">SUA TELA • MUDO LOCAL</span></div>
-      <div class="stream-waiting">Conectando à apresentação…</div>
-      <div class="stream-overlay">
-        <div class="stream-avatar-slot"></div>
-        <div class="stream-meta"><b></b><small></small></div>
-        <span class="live-pill">AO VIVO</span><span class="tile-spacer"></span>
-        <span class="audio-indicator">▥</span><button class="stream-menu">•••</button>
-      </div>`;
-    tile.addEventListener('click', e => {
-      if (e.target.closest('button')) return;
-      focusedClientId = member.clientId;
-      layoutMode = 'focus';
-      renderLayout();
-    });
-    stage.appendChild(tile);
-  }
-  tile.classList.toggle('local', member.clientId === clientId);
-  tile.querySelector('.quality-pill').textContent = member.quality || 'Auto';
-  tile.querySelector('.local-pill').classList.toggle('hidden', member.clientId !== clientId);
-  const slot = tile.querySelector('.stream-avatar-slot');
-  slot.innerHTML = member.avatar ? `<img class="stream-avatar-fallback" src="${member.avatar}" alt="" />` : `<div class="stream-avatar-fallback">${escapeHtml(initials(member.name))}</div>`;
-  tile.querySelector('.stream-meta b').textContent = member.name || 'Visitante';
-  tile.querySelector('.stream-meta small').textContent = member.clientId === clientId ? 'Você está apresentando' : (member.audio ? 'Áudio disponível' : 'Sem áudio');
-  tile.querySelector('.audio-indicator').textContent = member.audio ? '▥' : '×';
+/* ---------- Stage ---------- */
+function renderStage() {
+  const owner = ownerMember();
+  const streaming = isOwner ? Boolean(localStream) : Boolean(owner?.streaming);
+  $('presentingCount').textContent = streaming ? '1 apresentando' : '0 apresentando';
+  $('stagePlaceholder').classList.toggle('hidden', streaming && (isOwner ? localStream : hasLiveRemoteVideo()));
+  $('videoSurface').classList.toggle('hidden', !(streaming && (isOwner ? localStream : hasLiveRemoteVideo())));
+  if (isOwner && localStream) attachStageStream(localStream, true);
+  else if (!isOwner && remoteStream && hasLiveRemoteVideo()) attachStageStream(remoteStream, false);
 
-  const stream = member.clientId === clientId ? localStream : remoteStreams.get(member.clientId)?.stream;
-  let video = tile.querySelector('video');
-  const waiting = tile.querySelector('.stream-waiting');
-  if (stream) {
-    if (!video) {
-      video = document.createElement('video');
-      video.autoplay = true; video.playsInline = true;
-      tile.insertBefore(video, tile.firstChild);
-    }
-    if (video.srcObject !== stream) video.srcObject = stream;
-    video.muted = member.clientId === clientId;
-    if (member.clientId === clientId) { video.volume = 0; video.setAttribute('aria-label', 'Sua transmissão local muda'); }
-    else applyVolumeFor(member.clientId, video);
-    waiting?.classList.add('hidden');
-  } else {
-    if (video) { video.srcObject = null; video.remove(); }
-    waiting?.classList.remove('hidden');
+  if (!streaming) {
+    $('placeholderText').innerHTML = isOwner ? 'Clique em <b>Apresentar agora</b>, escolha uma tela, janela ou aba e comece.' : 'Aguardando o dono da sala iniciar a apresentação.';
+    $('viewerWaitingLabel').textContent = 'Aguardando o dono iniciar a transmissão.';
+  } else if (!isOwner && !hasLiveRemoteVideo()) {
+    $('stagePlaceholder').classList.remove('hidden');
+    $('placeholderText').textContent = 'Conectando ao vídeo da transmissão…';
   }
-  return tile;
+  const presenter = isOwner ? (meMember() || { name: currentNickname, avatar: currentAvatar, quality: QUALITY[selectedQuality].label, audio: localStream?.getAudioTracks().length > 0 }) : owner;
+  if (presenter) {
+    $('videoAvatar').src = avatarSrc(presenter.avatar);
+    $('videoUserName').textContent = presenter.name || currentNickname;
+    $('videoQualityPill').textContent = presenter.quality || QUALITY[selectedQuality].label;
+    const hasAudio = isOwner ? Boolean(localStream?.getAudioTracks().length) : Boolean(presenter.audio);
+    $('videoAudioLabel').textContent = hasAudio ? 'Áudio da apresentação' : 'Sem áudio';
+    $('audioActivity').classList.toggle('active', hasAudio);
+  }
+  $('localMutePill').classList.toggle('hidden', !isOwner || !localStream);
+  setShareButtons(Boolean(localStream));
+  updateQualitySelection();
 }
-function syncStreamTiles() {
-  const stage = $('streamStage');
-  const streaming = getStreamingMembers();
-  const valid = new Set(streaming.map(m => m.clientId));
-  stage.querySelectorAll('.stream-tile').forEach(tile => {
-    if (!valid.has(tile.dataset.clientId)) tile.remove();
-  });
-  streaming.forEach(ensureTile);
-  $('emptyState').classList.toggle('hidden', streaming.length > 0);
-  $('liveCountLabel').textContent = `${streaming.length} apresentando`;
-  if (streaming.length === 1) focusedClientId = streaming[0].clientId;
-  if (focusedClientId && !valid.has(focusedClientId)) focusedClientId = streaming[0]?.clientId || null;
-  renderLayout();
+
+/* ---------- Mixer / remote audio ---------- */
+function setMasterVolume(value) {
+  masterVolume = clamp(Number(value), 0, 150);
+  localStorage.setItem(STORE.volume, String(masterVolume));
+  $('masterVolume').value = String(masterVolume); $('masterVolumeLabel').textContent = `${Math.round(masterVolume)}%`;
+  $('settingsVolume').value = String(masterVolume); $('settingsVolumeLabel').textContent = `${Math.round(masterVolume)}%`;
+  updateAudioGain();
 }
-function renderLayout() {
-  const stage = $('streamStage');
-  const count = getStreamingMembers().length;
-  stage.classList.toggle('one-stream', count === 1);
-  stage.classList.toggle('grid-layout', layoutMode === 'grid');
-  stage.classList.toggle('focus-layout', layoutMode === 'focus' && count > 1);
-  stage.querySelectorAll('.stream-tile').forEach(tile => tile.classList.toggle('focused', layoutMode === 'focus' && tile.dataset.clientId === focusedClientId));
-  $('gridBtn').classList.toggle('active', layoutMode === 'grid');
-  $('focusBtn').classList.toggle('active', layoutMode === 'focus');
+function disposeAudioPipeline() {
+  if (!audioPipeline) return;
+  try { audioPipeline.source.disconnect(); audioPipeline.compressor?.disconnect(); audioPipeline.gain.disconnect(); } catch {}
+  audioPipeline = null;
 }
-function mixState(client) {
-  if (!channelMix.has(client)) channelMix.set(client, { volume: 1, muted: false });
-  return channelMix.get(client);
+async function rebuildAudioPipeline() {
+  disposeAudioPipeline();
+  if (isOwner || !remoteStream?.getAudioTracks().length) return;
+  const ctx = await getAudioContext(); if (!ctx) return;
+  try {
+    const audioOnly = new MediaStream(remoteStream.getAudioTracks());
+    const source = ctx.createMediaStreamSource(audioOnly);
+    const gain = ctx.createGain();
+    let compressor = null;
+    if (compressorEnabled) {
+      compressor = ctx.createDynamicsCompressor();
+      compressor.threshold.value = -16; compressor.knee.value = 20; compressor.ratio.value = 4; compressor.attack.value = .004; compressor.release.value = .22;
+      source.connect(compressor).connect(gain).connect(ctx.destination);
+    } else source.connect(gain).connect(ctx.destination);
+    audioPipeline = { source, compressor, gain };
+    updateAudioGain();
+  } catch (err) { console.warn('Mixer WebAudio indisponível', err); }
 }
-function applyVolumeFor(id, video = null) {
-  if (id === clientId) return;
-  const state = mixState(id);
-  const target = video || document.querySelector(`.stream-tile[data-client-id="${CSS.escape(id)}"] video`);
-  if (!target) return;
-  const soloBlocks = soloClientId && soloClientId !== id;
-  target.muted = Boolean(state.muted || soloBlocks);
-  target.volume = Math.max(0, Math.min(1, masterVolume * state.volume));
-}
-function applyAllVolumes() {
-  for (const member of getStreamingMembers()) if (member.clientId !== clientId) applyVolumeFor(member.clientId);
+function updateAudioGain() {
+  if (!audioPipeline) return;
+  const owner = ownerMember(); const id = owner?.clientId || 'host';
+  const channel = (channelVolume.get(id) ?? 100) / 100;
+  const muted = channelMuted.has(id) || (soloClientId && soloClientId !== id);
+  audioPipeline.gain.gain.value = muted ? 0 : (masterVolume / 100) * channel;
 }
 function renderMixer() {
-  const wrap = $('mixerChannels');
-  const streaming = getStreamingMembers();
-  if (!streaming.length) {
-    wrap.innerHTML = '<div class="mixer-note">Nenhuma transmissão ativa.</div>';
-    return;
-  }
-  wrap.innerHTML = '';
-  for (const member of streaming) {
-    const local = member.clientId === clientId;
-    const state = mixState(member.clientId);
-    const channel = document.createElement('div');
-    channel.className = 'mixer-channel';
-    channel.innerHTML = `
-      <div class="mixer-channel-head">${member.avatar ? `<img src="${member.avatar}" alt="" />` : `<div class="mix-fallback">${escapeHtml(initials(member.name))}</div>`}<b>${escapeHtml(member.name)}</b><span>${local ? 'LOCAL' : Math.round(state.volume*100)+'%'}</span></div>
-      <input class="channel-volume" type="range" min="0" max="100" value="${Math.round(state.volume*100)}" ${local ? 'disabled' : ''} />
-      <div class="mixer-channel-actions"><button class="mix-toggle mute ${state.muted?'active':''}" ${local?'disabled':''}>M</button><button class="mix-toggle solo ${soloClientId===member.clientId?'active':''}" ${local?'disabled':''}>S</button></div>`;
-    if (!local) {
-      channel.querySelector('.channel-volume').addEventListener('input', e => {
-        state.volume = Number(e.target.value)/100;
-        channel.querySelector('.mixer-channel-head span').textContent = `${e.target.value}%`;
-        applyVolumeFor(member.clientId);
-      });
-      channel.querySelector('.mute').addEventListener('click', e => {
-        state.muted = !state.muted; e.currentTarget.classList.toggle('active', state.muted); applyVolumeFor(member.clientId);
-      });
-      channel.querySelector('.solo').addEventListener('click', () => {
-        soloClientId = soloClientId === member.clientId ? null : member.clientId; renderMixer(); applyAllVolumes();
-      });
-    }
-    wrap.appendChild(channel);
-  }
+  const owner = ownerMember();
+  const hostId = owner?.clientId;
+  if (!hostId) { $('mixerChannels').innerHTML = '<div class="mixer-empty">Aguardando transmissor.</div>'; return; }
+  const vol = channelVolume.get(hostId) ?? 100;
+  const muted = channelMuted.has(hostId);
+  const solo = soloClientId === hostId;
+  $('mixerChannels').innerHTML = `<div class="mixer-channel"><div class="mixer-person"><span class="mixer-avatar">${owner.avatar ? `<img src="${owner.avatar}" alt="" />` : escapeHtml(initials(owner.name))}</span><div><b>${escapeHtml(owner.name)}</b><small>${owner.audio ? 'Áudio disponível' : 'Sem áudio'}</small></div></div><div class="channel-control"><input data-channel-volume="${escapeHtml(hostId)}" type="range" min="0" max="150" value="${vol}" /><b>${Math.round(vol)}%</b><button data-channel-mute="${escapeHtml(hostId)}" class="${muted ? 'active' : ''}">M</button><button data-channel-solo="${escapeHtml(hostId)}" class="${solo ? 'active' : ''}">S</button></div></div>`;
+  $$('[data-channel-volume]').forEach(input => input.oninput = e => { channelVolume.set(e.target.dataset.channelVolume, Number(e.target.value)); renderMixer(); updateAudioGain(); });
+  $$('[data-channel-mute]').forEach(btn => btn.onclick = () => { const id = btn.dataset.channelMute; channelMuted.has(id) ? channelMuted.delete(id) : channelMuted.add(id); renderMixer(); updateAudioGain(); });
+  $$('[data-channel-solo]').forEach(btn => btn.onclick = () => { soloClientId = soloClientId === btn.dataset.channelSolo ? null : btn.dataset.channelSolo; renderMixer(); updateAudioGain(); });
+  updateAudioGain();
 }
 
-/* Chat */
-function appendChatMessage(message) {
+/* ---------- Chat ---------- */
+function renderChat(messages) {
+  chatIds.clear();
+  $('chatMessages').innerHTML = '';
+  for (const msg of messages) appendChat(msg, false);
+  if (!messages.length) $('chatMessages').innerHTML = `<div class="chat-empty"><span>▢</span><b>Nenhuma mensagem ainda</b><small>Envie uma mensagem para a sala.</small></div>`;
+}
+function appendChat(message, scroll = true) {
   if (!message?.id || chatIds.has(message.id)) return;
   chatIds.add(message.id);
-  const box = $('chatMessages');
-  box.querySelector('.chat-empty')?.remove();
-  const item = document.createElement('div');
-  item.className = 'chat-message';
-  const time = new Date(message.at || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  item.innerHTML = `${message.avatar ? `<img src="${message.avatar}" alt="" />` : `<div class="chat-avatar-fallback">${escapeHtml(initials(message.name))}</div>`}
-    <div class="chat-body"><div class="chat-meta"><b>${escapeHtml(message.name)}</b><span>${time}</span></div><p>${escapeHtml(message.text).replace(/\n/g,'<br>')}</p></div>`;
-  box.appendChild(item);
-  box.scrollTop = box.scrollHeight;
+  $('chatMessages').querySelector('.chat-empty')?.remove();
+  const mine = message.clientId === clientId;
+  const div = document.createElement('article'); div.className = `chat-message ${mine ? 'mine' : ''}`;
+  div.innerHTML = `<div class="chat-avatar">${message.avatar ? `<img src="${message.avatar}" alt="" />` : escapeHtml(initials(message.name))}</div><div class="chat-bubble"><div><b>${escapeHtml(message.name)}</b><time>${timeLabel(message.at)}</time></div><p>${escapeHtml(message.text).replace(/\n/g, '<br>')}</p></div>`;
+  $('chatMessages').appendChild(div);
+  if (scroll) $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
 }
-function sendChat() {
-  const text = $('chatInput').value.trim();
-  if (!text) return;
-  socket.emit('chat:send', { text }, result => { if (!result?.ok) toast('Mensagem não enviada.'); });
+async function sendChat(e) {
+  e.preventDefault(); const text = $('chatInput').value.trim(); if (!text) return;
+  const res = await ackEmit('chat:send', { text }, 4000);
+  if (!res.ok) return toast(res.error || 'Mensagem não enviada.');
   $('chatInput').value = '';
 }
 
-/* Avatar ajustável */
+/* ---------- Avatar ---------- */
 function openAvatarEditor() {
-  avatarSource = currentAvatar || '/linozera-logo.png';
-  avatarX = 0; avatarY = 0; avatarZoom = 1;
-  $('avatarEditorImg').src = avatarSource;
-  $('avatarZoom').value = '100';
-  updateAvatarEditorPreview();
-  showModal('avatarModal');
+  avatarEdit = { dataUrl: currentAvatar || '/default-avatar.png', x: 0, y: 0, zoom: 100 };
+  $('avatarEditorImg').src = avatarEdit.dataUrl;
+  $('avatarZoom').value = '100'; $('avatarZoomLabel').textContent = '100%';
+  applyAvatarEditorTransform(); showModal('avatarModal');
 }
-function updateAvatarEditorPreview() {
-  $('avatarEditorImg').style.transform = `translate(calc(-50% + ${avatarX}px),calc(-50% + ${avatarY}px)) scale(${avatarZoom})`;
-  $('avatarZoomLabel').textContent = `${Math.round(avatarZoom*100)}%`;
+function applyAvatarEditorTransform() { $('avatarEditorImg').style.transform = `translate(${avatarEdit.x}px, ${avatarEdit.y}px) scale(${avatarEdit.zoom / 100})`; }
+function moveAvatar(dir) {
+  const step = 8;
+  if (dir === 'up') avatarEdit.y -= step; if (dir === 'down') avatarEdit.y += step;
+  if (dir === 'left') avatarEdit.x -= step; if (dir === 'right') avatarEdit.x += step;
+  if (dir === 'center') { avatarEdit.x = 0; avatarEdit.y = 0; }
+  applyAvatarEditorTransform();
 }
-async function saveAvatar() {
-  const img = $('avatarEditorImg');
-  if (!img.complete || !img.naturalWidth) return toast('A imagem ainda está carregando.');
-  const size = 256;
-  const canvas = document.createElement('canvas'); canvas.width = size; canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#08050f'; ctx.fillRect(0,0,size,size);
-  const base = Math.max(size / img.naturalWidth, size / img.naturalHeight);
-  const scale = base * avatarZoom;
-  const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
-  const ratio = size / 220;
-  ctx.drawImage(img, (size-w)/2 + avatarX*ratio, (size-h)/2 + avatarY*ratio, w, h);
-  currentAvatar = canvas.toDataURL('image/jpeg', .86);
-  localStorage.setItem('lnz_avatar', currentAvatar);
-  updateProfileImages();
-  hideModal('avatarModal');
-  if (currentRoom) socket.emit('room:profile', { nickname: currentNickname, avatar: currentAvatar });
-  toast('Avatar atualizado.');
+function handleAvatarFile(e) {
+  const file = e.target.files?.[0]; if (!file) return;
+  if (file.size > 6 * 1024 * 1024) return toast('A imagem deve ter no máximo 6 MB.');
+  const reader = new FileReader(); reader.onload = () => { avatarEdit.dataUrl = String(reader.result); $('avatarEditorImg').src = avatarEdit.dataUrl; avatarEdit.x = avatarEdit.y = 0; avatarEdit.zoom = 100; $('avatarZoom').value = '100'; applyAvatarEditorTransform(); }; reader.readAsDataURL(file);
 }
-
-/* Atualização */
-async function checkForUpdate() {
+async function saveEditedAvatar() {
   try {
-    const data = await fetch(`/api/version?t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json());
-    if (data.version && data.version !== BUILD_VERSION && sessionStorage.getItem(`lnz_skip_update_${data.version}`) !== '1') {
-      $('updateText').textContent = `Versão ${data.version}: ${(data.notes || []).slice(0,2).join(' • ')}`;
-      $('updateBanner').dataset.version = data.version;
-      $('updateBanner').classList.remove('hidden');
-      playUISound('update');
-    }
-  } catch {}
+    const img = new Image(); img.decoding = 'async'; img.src = avatarEdit.dataUrl; await img.decode();
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const ctx = canvas.getContext('2d');
+    const cover = Math.max(256 / img.naturalWidth, 256 / img.naturalHeight) * (avatarEdit.zoom / 100);
+    const w = img.naturalWidth * cover, h = img.naturalHeight * cover;
+    ctx.drawImage(img, (256 - w) / 2 + avatarEdit.x * 1.6, (256 - h) / 2 + avatarEdit.y * 1.6, w, h);
+    currentAvatar = canvas.toDataURL('image/jpeg', .86);
+    localStorage.setItem(STORE.avatar, currentAvatar); syncProfileUI(); hideModal('avatarModal');
+    if (currentRoom) await ackEmit('room:profile', { nickname: currentNickname, avatar: currentAvatar }, 4000);
+    toast('Avatar atualizado.');
+  } catch { toast('Não foi possível salvar esse avatar.'); }
 }
-setInterval(checkForUpdate, 60000);
 
-/* Eventos socket */
-socket.on('room:status', data => { if (currentRoom && normalizeRoom(data.roomId) === currentRoom) applyRoomStatus(data); });
-socket.on('member:joined', () => { playUISound('join'); socket.emit('room:status'); });
-socket.on('member:left', ({ clientId: leftId }) => {
-  remoteStreams.delete(leftId); channelMix.delete(leftId); if (soloClientId === leftId) soloClientId = null;
-  cleanupPeersForMembers();
-  playUISound('leave'); socket.emit('room:status');
-});
-socket.on('stream:state', ({ clientId: id, socketId, active, quality, audio }) => {
-  const member = members.get(id);
-  if (member) { member.streaming = Boolean(active); member.quality = quality || member.quality; member.audio = Boolean(audio); member.socketId = socketId || member.socketId; }
-  if (!active && id !== clientId) {
-    remoteStreams.delete(id);
-    const host = ownerInRoom();
-    if (host?.clientId === id && viewerHostId) { closePeer(viewerHostId); viewerHostId = null; }
-  }
-  syncStreamTiles(); renderMixer();
-  if (id !== clientId) playUISound(active ? 'start' : 'stop');
-});
-socket.on('chat:message', message => { appendChatMessage(message); if (message.clientId !== clientId) playUISound('chat'); });
-socket.on('room:closed', () => { resetRoomState(); showHome(); toast('A sala foi encerrada.'); playUISound('leave'); });
-socket.on('member:replaced', () => { resetRoomState(); showHome(); toast('Sua sessão foi aberta em outra aba.'); });
-socket.on('connect', () => {
-  $('connection').innerHTML = '<i></i><span>Conectado</span>';
-  if (reconnecting) playUISound('connected');
-  reconnecting = false;
-  if (currentRoom) joinRoom(currentRoom, true);
-});
-socket.on('disconnect', () => {
-  reconnecting = true;
-  $('connection').innerHTML = '<span>Reconectando…</span>';
-  closeAllPeers();
-});
+/* ---------- Settings ---------- */
+function openSettings(tab = 'general') { activateSettingsTab(tab); showModal('settingsModal'); $('roomSettingsUnavailable').classList.toggle('hidden', Boolean(currentRoom)); $('roomSettingsControls').classList.toggle('hidden', !currentRoom); }
+function activateSettingsTab(name) { $$('.settings-tab').forEach(x => x.classList.toggle('active', x.dataset.settingsTab === name)); $$('[data-settings-panel]').forEach(x => x.classList.toggle('active', x.dataset.settingsPanel === name)); }
+async function checkUpdates(manual = false) {
+  try {
+    const res = await fetch(`/api/version?t=${Date.now()}`, { cache: 'no-store' }); if (!res.ok) throw new Error();
+    const data = await res.json(); $('settingsVersionInfo').textContent = `Versão atual: V${data.version}`;
+    if (manual) toast(`Você está na versão V${data.version}.`);
+    const seen = localStorage.getItem('lnz_seen_version');
+    if (updateNotices && seen && seen !== data.version) { $('updateText').textContent = `V${data.version} disponível.`; $('updateBanner').classList.remove('hidden'); playUiSound('update'); }
+    localStorage.setItem('lnz_seen_version', data.version);
+  } catch { if (manual) toast('Não foi possível verificar atualização agora.'); }
+}
 
-/* Controles */
-$('nicknameInput').value = currentNickname;
-updateNicknameCounter(); updateProfileImages();
-$('nicknameInput').addEventListener('input', updateNicknameCounter);
-$('roomInput').addEventListener('input', e => { e.target.value = formatRoom(e.target.value); });
-$('roomInput').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(e.target.value); });
-$('createBtn').addEventListener('click', createRoom);
-$('heroCreateBtn').addEventListener('click', () => $('entryCard').scrollIntoView({ behavior:'smooth', block:'center' }));
-$('navEnterBtn').addEventListener('click', () => $('entryCard').scrollIntoView({ behavior:'smooth', block:'center' }));
-$('joinBtn').addEventListener('click', () => joinRoom($('roomInput').value));
-$('refreshRoomsBtn').addEventListener('click', loadPublicRooms);
-$('homeAvatarBtn').addEventListener('click', openAvatarEditor);
-$('editAvatarBtn').addEventListener('click', openAvatarEditor);
-$('editAvatarBtn2').addEventListener('click', openAvatarEditor);
-$('copyCodeBtn').addEventListener('click', () => copyText(formatRoom(currentRoom), 'Código copiado.'));
-$('topRoomCode').addEventListener('click', () => copyText(formatRoom(currentRoom), 'Código copiado.'));
-$('copyLinkBtn').addEventListener('click', () => copyText(roomInviteUrl(), 'Link do convite copiado.'));
-$('lockBtn').addEventListener('click', toggleLock);
-$('closeRoomBtn').addEventListener('click', closeRoom);
-$('leaveBtn').addEventListener('click', leaveRoom);
+/* ---------- Misc ---------- */
+function openShareModal() { if (!isOwner) return; updateQualitySelection(); showModal('shareModal'); }
+async function copyText(text, ok = 'Copiado.') { try { await navigator.clipboard.writeText(text); toast(ok); } catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast(ok); } }
+function setConnectionText(text, connected) { $('connectionStatus').innerHTML = `<i class="${connected ? '' : 'offline'}"></i> ${escapeHtml(text)}`; }
+async function toggleFullscreen() { const el = $('stageArea'); try { if (!document.fullscreenElement) await el.requestFullscreen(); else await document.exitFullscreen(); } catch {} }
 
-[$('shareBtn'), $('emptyShareBtn')].forEach(btn => btn.addEventListener('click', () => {
-  if (localStream) stopSharing(true); else showModal('shareModal');
-}));
-$('qualityBtn').addEventListener('click', () => showModal('shareModal'));
-$$('[data-quality]').forEach(btn => btn.addEventListener('click', () => {
-  selectedQuality = btn.dataset.quality;
-  localStorage.setItem('lnz_quality', selectedQuality);
-  $$('[data-quality]').forEach(b => b.classList.toggle('selected', b === btn));
-  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
-}));
-$('confirmShareBtn').addEventListener('click', async () => {
-  hideModal('shareModal');
-  if (localStream) { await applyQualityToLocalTrack(); toast(`Qualidade ajustada para ${QUALITY[selectedQuality].label}.`); }
-  else await startSharing();
-});
-$('qualityDockLabel').textContent = QUALITY[selectedQuality]?.label || QUALITY.auto.label;
-$$('[data-quality]').forEach(b => b.classList.toggle('selected', b.dataset.quality === selectedQuality));
+window.addEventListener('beforeunload', () => { if (localStream) localStream.getTracks().forEach(t => t.stop()); });
+window.addEventListener('pagehide', () => { if (localStream) localStream.getTracks().forEach(t => t.stop()); });
 
-$('gridBtn').addEventListener('click', () => { layoutMode='grid'; renderLayout(); });
-$('focusBtn').addEventListener('click', () => { layoutMode='focus'; focusedClientId ||= getStreamingMembers()[0]?.clientId || null; renderLayout(); });
-$('fullscreenBtn').addEventListener('click', async () => {
-  const focused = focusedClientId ? document.querySelector(`.stream-tile[data-client-id="${CSS.escape(focusedClientId)}"]`) : null;
-  const target = focused || $('stageArea') || $('roomView');
-  try { if (!document.fullscreenElement) await target.requestFullscreen(); else await document.exitFullscreen(); }
-  catch { toast('Não foi possível abrir em tela cheia.'); }
-});
-
-$('mixerBtn').addEventListener('click', () => { renderMixer(); $('mixerPanel').classList.toggle('hidden'); });
-$('closeMixerBtn').addEventListener('click', () => $('mixerPanel').classList.add('hidden'));
-$('masterVolume').addEventListener('input', e => { masterVolume = Number(e.target.value)/100; $('masterVolumeLabel').textContent = `${e.target.value}%`; applyAllVolumes(); });
-$('chatToggleBtn').addEventListener('click', () => $('chatPanel').classList.toggle('closed'));
-$('closeChatBtn').addEventListener('click', () => $('chatPanel').classList.add('closed'));
-$('sendChatBtn').addEventListener('click', sendChat);
-$('chatInput').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
-
-$('avatarFile').addEventListener('change', e => {
-  const file = e.target.files?.[0];
-  if (!file) return;
-  if (!file.type.startsWith('image/')) return toast('Escolha uma imagem válida.');
-  if (file.size > 8 * 1024 * 1024) return toast('Use uma imagem de até 8 MB.');
-  const reader = new FileReader();
-  reader.onload = () => { avatarSource = String(reader.result); $('avatarEditorImg').src = avatarSource; avatarX=0; avatarY=0; avatarZoom=1; $('avatarZoom').value='100'; updateAvatarEditorPreview(); };
-  reader.readAsDataURL(file);
-});
-$$('[data-move]').forEach(btn => btn.addEventListener('click', () => {
-  const move = btn.dataset.move, step = 8;
-  if (move === 'up') avatarY -= step;
-  if (move === 'down') avatarY += step;
-  if (move === 'left') avatarX -= step;
-  if (move === 'right') avatarX += step;
-  if (move === 'center') { avatarX=0; avatarY=0; }
-  updateAvatarEditorPreview();
-}));
-$('avatarZoom').addEventListener('input', e => { avatarZoom = Number(e.target.value)/100; updateAvatarEditorPreview(); });
-$('saveAvatarBtn').addEventListener('click', saveAvatar);
-
-$('settingsBtn').addEventListener('click', () => showModal('settingsModal'));
-$('soundToggle').checked = soundEnabled;
-$('soundVolume').value = String(Math.round(soundVolume*100));
-$('soundVolumeLabel').textContent = `${Math.round(soundVolume*100)}%`;
-$('soundToggle').addEventListener('change', e => { soundEnabled=e.target.checked; localStorage.setItem('lnz_sounds', soundEnabled?'1':'0'); if (soundEnabled) playUISound('tap'); });
-$('soundVolume').addEventListener('input', e => { soundVolume=Number(e.target.value)/100; localStorage.setItem('lnz_sound_volume', e.target.value); $('soundVolumeLabel').textContent=`${e.target.value}%`; });
-
-$$('[data-close]').forEach(btn => btn.addEventListener('click', () => hideModal(btn.dataset.close)));
-$$('.modal-backdrop').forEach(backdrop => backdrop.addEventListener('click', e => { if (e.target === backdrop) hideModal(backdrop.id); }));
-$('updateNowBtn').addEventListener('click', () => location.reload());
-$('updateLaterBtn').addEventListener('click', () => { const v=$('updateBanner').dataset.version; if(v) sessionStorage.setItem(`lnz_skip_update_${v}`,'1'); $('updateBanner').classList.add('hidden'); });
-
-window.addEventListener('beforeunload', () => {
-  if (localStream) localStream.getTracks().forEach(t => t.stop());
-  if (currentRoom && socket.connected) socket.emit('room:leave');
-});
-
-const initialRoom = normalizeRoom(new URLSearchParams(location.search).get('room'));
-if (initialRoom) $('roomInput').value = formatRoom(initialRoom);
-loadPublicRooms(); checkForUpdate();
-setInterval(loadPublicRooms, 15000);
+boot();

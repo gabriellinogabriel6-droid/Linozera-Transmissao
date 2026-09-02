@@ -1,45 +1,71 @@
-# Linozera Transmissão V4.2 — Visual atual + motor V3
+# Linozera Transmissão V5 Pro
 
-Esta versão mantém o **modelo visual premium da V4.1** (lobby roxo/preto, sala com painel esquerdo, palco central, chat à direita e mixer), mas volta a usar o **fluxo de transmissão simples da V3**.
+Reconstrução do projeto com foco em aparência profissional, estabilidade e correção de tela preta.
 
-## Transmissão
-- O dono/criador da sala é o transmissor principal.
-- Os demais entram como espectadores.
-- WebRTC direto transmissor → cada espectador, como na V3.
-- Reconexão do Socket.IO mantém a sala e recria as conexões WebRTC.
-- Seletor de qualidade: Automático, 480p30, 720p30, 1080p30, 1080p60 e 1440p60.
+## Principais mudanças
 
-## Visual e recursos mantidos
-- Lobby e sala no modelo visual atual aprovado.
+- Interface reconstruída do zero (lobby + sala) em preto/roxo Linozera.
+- Layout responsivo e estável: sidebar esquerda, palco central, mixer e chat lateral.
+- Salas públicas aparecem no lobby em tempo real e também são atualizadas a cada 5 segundos.
+- Botão **Atualizar** do lobby e **Atualizar sala** funcionais.
+- Motor WebRTC de um apresentador principal (dono da sala) para espectadores.
+- Correção de tela preta: as faixas de vídeo/áudio recebidas são acumuladas no mesmo `MediaStream`; áudio não substitui mais o vídeo.
+- Watchdog de vídeo: se houver track de vídeo ativa mas nenhum quadro decodificado, o espectador reconecta automaticamente.
+- ICE recebido antes da oferta SDP é preservado, evitando conexões incompletas.
+- Reconexão automática Socket.IO + WebRTC.
+- Captura sem redimensionamento agressivo durante a apresentação para evitar “tremedeira”.
+- Modo Automático reduz bitrate/FPS quando necessário, sem ficar alterando o tamanho do player.
+- Sem microfone e sem câmera.
+- Prévia local sempre muda.
+- Compartilhamento de tela inteira/monitor tem o áudio removido para evitar retorno de Discord/Windows.
+- Para enviar áudio, prefira **Aba** ou **Janela**.
+- Mixer com volume padrão 120%, mute/solo e compressor.
 - Chat em tempo real.
-- Mix de som para controlar o áudio recebido.
-- Avatar com upload, posição e zoom.
-- Trancar/destrancar sala.
-- Salas públicas opcionais.
-- Botão do Discord: https://discord.gg/WndvT5HgG8
-- Aviso de atualização e sons interativos.
+- Avatar editável com posição e zoom.
+- Sala pública/privada e trancar/destrancar sala.
+- Configurações completas.
+- Link do Discord: https://discord.gg/WndvT5HgG8
 
-## Sem retorno
-- Não usa `getUserMedia`: câmera e microfone não são solicitados.
-- A prévia local do transmissor fica sempre muda.
-- O transmissor não recebe a própria transmissão pelo site.
-- `systemAudio: "exclude"` e `windowAudio: "window"` são solicitados quando suportados para reduzir captura do áudio geral do Windows/Discord.
-- Para melhor separação de áudio, compartilhe uma aba ou janela específica.
+## Rodar no Windows
 
-## Windows
-1. Extraia o ZIP.
-2. Abra `INICIAR.bat`.
-3. Acesse `http://localhost:3000`.
+1. Instale Node.js 18 ou superior.
+2. Extraia a pasta.
+3. Execute `INICIAR.bat`.
+4. Acesse `http://localhost:3000`.
 
 ## Render
-Use **Web Service**:
+
+Crie um **Web Service** (não Static Site):
+
 - Build Command: `npm install`
 - Start Command: `npm start`
 
-O servidor usa `process.env.PORT` automaticamente.
+O Render fornece `PORT` automaticamente.
 
-## TURN (recomendado)
-Para conexões entre redes mais restritas, configure no Render:
+### TURN (recomendado)
+
+STUN sozinho pode falhar em algumas redes, CGNATs, empresas e provedores. Para maior taxa de conexão entre redes diferentes, configure no Render:
+
 - `TURN_URL`
 - `TURN_USERNAME`
 - `TURN_CREDENTIAL`
+
+Sem TURN, o sistema ainda funciona em muitas redes, mas não é possível garantir conexão P2P em todos os provedores.
+
+## Como evitar retorno
+
+- Não compartilhe **Tela inteira** se precisar transmitir áudio. Nesta versão, o áudio de monitor é removido automaticamente.
+- Para jogo/programa com som, escolha **Janela** ou **Aba** quando o navegador oferecer áudio daquela fonte.
+- O site nunca solicita seu microfone.
+- O vídeo do próprio transmissor fica mudo localmente.
+
+## Verificação feita
+
+- `node --check server.js`
+- `node --check public/app.js`
+- IDs HTML/JavaScript conferidos.
+- Assets locais conferidos.
+- Contratos de eventos cliente/servidor conferidos.
+- Lobby e sala renderizados em navegador headless para inspeção visual.
+
+O teste WebRTC real entre dois computadores precisa ser feito no ambiente final (Render/PC), porque depende da rede, NAT, navegador e TURN.
