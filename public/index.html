@@ -3,137 +3,253 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="theme-color" content="#061719" />
-  <meta name="description" content="Linozera Transmissão — compartilhe sua tela ao vivo, direto pelo navegador." />
-  <title>Linozera — Transmissão</title>
+  <meta name="theme-color" content="#080510" />
+  <meta name="description" content="Linozera Transmissão V4 — salas de compartilhamento de tela com chat, mix de som e múltiplas transmissões." />
+  <title>Linozera — Transmissão V4</title>
+  <link rel="icon" href="/linozera-logo.png" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <section id="home" class="landing">
-    <div class="landing-art" aria-hidden="true"></div>
-    <div class="dot-field dots-left" aria-hidden="true"></div>
-    <div class="dot-field dots-right" aria-hidden="true"></div>
+  <section id="home" class="home-page">
+    <header class="home-nav shell">
+      <a class="brand" href="#" aria-label="Linozera Transmissão">
+        <img src="/linozera-logo.png" alt="" />
+        <span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span>
+      </a>
+      <nav>
+        <a href="#features">Recursos</a>
+        <a href="#publicRooms">Salas públicas</a>
+        <a href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
+        <button id="navEnterBtn" class="nav-enter">Entrar</button>
+      </nav>
+    </header>
 
-    <div class="landing-wrap">
-      <div class="hero-panel">
-        <div class="brand-line">
-          <img src="/linozera-logo.png" alt="" class="brand-mark" />
-          <strong>LINOZERA</strong>
-          <span></span>
-          <small>ponto a ponto</small>
+    <main class="home-main shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">◉ &nbsp; PLATAFORMA DE TRANSMISSÃO AO VIVO</div>
+          <h1>Sua tela, ao vivo,<br />com <span>estilo profissional.</span></h1>
+          <p>Crie ou entre em salas em segundos, convide amigos e compartilhe sua tela com baixa latência, sem câmera e sem microfone.</p>
+          <div class="hero-actions">
+            <button id="heroCreateBtn" class="btn primary">＋ &nbsp; Criar sala agora</button>
+            <a class="btn ghost" href="#publicRooms">◎ &nbsp; Explorar salas públicas</a>
+          </div>
+          <div class="benefit-row">
+            <div><i>◌</i><span><b>Sem instalação</b><small>Tudo no navegador</small></span></div>
+            <div><i>◇</i><span><b>Sem retorno local</b><small>Microfone bloqueado</small></span></div>
+            <div><i>⚡</i><span><b>Baixa latência</b><small>WebRTC ponto a ponto</small></span></div>
+          </div>
         </div>
 
-        <h1>Sua tela, ao vivo,<br />direto para a sala.</h1>
-        <p class="hero-text">Crie uma sala em um clique, compartilhe o código e transmita a tela pelo navegador. Sem instalar nada e sem reproduzir sua própria transmissão.</p>
-
-        <div class="features">
-          <div><b>⚡</b><span>Sala instantânea, entre por código ou link</span></div>
-          <div><b>◇</b><span>Vídeo direto entre os navegadores via WebRTC</span></div>
-          <div><b>♙</b><span>Compartilhamento simples e sem capturar microfone</span></div>
+        <div class="hero-brand" aria-hidden="true">
+          <img src="/linozera-banner.png" alt="" />
+          <div class="hero-smoke"></div>
         </div>
 
-        <div class="hero-pills">
-          <span>◎ Sem instalação</span>
-          <span>◈ Sem retorno local</span>
+        <section id="entryCard" class="entry-card">
+          <h2>Entre na plataforma</h2>
+          <div class="profile-entry">
+            <button id="homeAvatarBtn" class="avatar-btn" title="Escolher avatar">
+              <img id="homeAvatarImg" src="/linozera-logo.png" alt="Seu avatar" />
+              <span>✎</span>
+            </button>
+            <label class="field grow">
+              <span>Seu apelido <small id="nickCount">0/24</small></span>
+              <input id="nicknameInput" maxlength="24" autocomplete="nickname" placeholder="Seu apelido" spellcheck="false" />
+            </label>
+          </div>
+          <div id="homeError" class="form-error"></div>
+          <button id="createBtn" class="btn primary full">＋ &nbsp; Criar sala</button>
+          <div class="divider"><span></span><b>OU</b><span></span></div>
+          <label class="field">
+            <span>Código da sala</span>
+            <input id="roomInput" maxlength="9" autocomplete="off" placeholder="XXXX-XXXX" spellcheck="false" />
+          </label>
+          <button id="joinBtn" class="btn outline full">Entrar na sala &nbsp; →</button>
+          <label class="switch-line" title="Salas públicas aparecem no lobby enquanto estiverem abertas">
+            <span>◈ &nbsp; Listar minha sala no lobby</span>
+            <input id="publicToggle" type="checkbox" />
+            <i></i>
+          </label>
+        </section>
+      </section>
+
+      <section id="publicRooms" class="home-section">
+        <div class="section-head">
+          <div><small>◉ &nbsp; AO VIVO</small><h2>Salas públicas</h2></div>
+          <button id="refreshRoomsBtn" class="text-btn">Atualizar ↻</button>
         </div>
-      </div>
-
-      <div class="entry-card">
-        <div class="entry-head">
-          <h2>Entrar</h2>
-          <p>Escolha um nickname para ser identificado na sala.</p>
+        <div id="publicRoomsGrid" class="public-grid">
+          <div class="public-empty">Nenhuma sala pública ao vivo agora.</div>
         </div>
+      </section>
 
-        <label class="field-label" for="nicknameInput">
-          <span>NICKNAME</span><small id="nickCount">0/24</small>
-        </label>
-        <div class="nickname-row">
-          <img src="/linozera-logo.png" alt="Linozera" class="mini-avatar" />
-          <input id="nicknameInput" maxlength="24" autocomplete="nickname" spellcheck="false" placeholder="Seu nickname" />
+      <section id="features" class="home-section">
+        <div class="section-head"><div><small>RECURSOS PRINCIPAIS</small><h2>Feito para compartilhar tela</h2></div></div>
+        <div class="feature-grid">
+          <article><i>▦</i><div><h3>Múltiplas transmissões</h3><p>Várias pessoas podem apresentar a tela ao mesmo tempo.</p></div></article>
+          <article><i>≋</i><div><h3>Mix de som</h3><p>Volume mestre e controle individual de cada transmissão.</p></div></article>
+          <article><i>▢</i><div><h3>Chat em tempo real</h3><p>Converse com todos sem sair da sala.</p></div></article>
+          <article><i>◉</i><div><h3>Avatar ajustável</h3><p>Escolha sua imagem, mova e aplique zoom antes de salvar.</p></div></article>
         </div>
-        <div id="homeError" class="form-error"></div>
+      </section>
+    </main>
 
-        <button id="createBtn" class="main-btn">＋ &nbsp; Criar sala</button>
-
-        <div class="divider"><span></span><b>OU</b><span></span></div>
-
-        <label class="field-label" for="roomInput"><span>CÓDIGO DA SALA</span></label>
-        <div class="join-row">
-          <input id="roomInput" maxlength="9" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX" />
-          <button id="joinBtn" class="join-btn">Entrar&nbsp; →</button>
-        </div>
-      </div>
-    </div>
-
-    <footer class="landing-footer">Feito para <strong>Linozera</strong> · transmissão ponto a ponto</footer>
+    <footer class="home-footer shell">
+      <div class="brand mini"><img src="/linozera-logo.png" alt="" /><span><b>LINOZERA</b><small>Conecte. Compartilhe. Transmita.</small></span></div>
+      <div>Seguro e privado &nbsp; • &nbsp; Sem câmera &nbsp; • &nbsp; Sem microfone</div>
+      <div>V4</div>
+    </footer>
   </section>
 
-  <section id="roomView" class="room-view hidden">
+  <section id="roomView" class="room-page hidden">
     <header class="room-topbar">
-      <div class="room-brand">
-        <img src="/linozera-logo.png" alt="" />
-        <strong>Linozera</strong>
-        <i></i>
-        <button id="topRoomCode" class="code-chip" title="Copiar código">XXXX-XXXX</button>
-      </div>
-      <div class="room-actions">
-        <button id="lockBtn" class="top-btn host-only">▣ &nbsp;Trancar</button>
-        <div class="people-chip">♧ <b id="topPeopleCount">1</b></div>
-        <div id="connection" class="connection"><i></i><span>Conectado</span></div>
-      </div>
+      <div class="brand mini"><img src="/linozera-logo.png" alt="" /><span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span></div>
+      <button id="topRoomCode" class="room-code-chip">CÓDIGO DA SALA &nbsp; <b>XXXX-XXXX</b> &nbsp; ▢</button>
+      <div class="top-spacer"></div>
+      <a class="discord-chip" href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
+      <div id="lockStateChip" class="state-chip">◈ Sala aberta</div>
+      <div class="state-chip">♙ <b id="topPeopleCount">1</b></div>
+      <div id="connection" class="connection"><i></i><span>Conectado</span></div>
+      <button id="settingsBtn" class="icon-btn" title="Configurações">⚙</button>
     </header>
 
     <div class="room-layout">
-      <aside class="sidebar">
-        <div class="room-card">
-          <small>CÓDIGO DA SALA</small>
-          <div class="room-code-line"><strong id="sideRoomCode">XXXX-XXXX</strong><button id="copyCodeBtn" title="Copiar código">▢</button></div>
-          <button id="copyLinkBtn" class="outline-btn">↗ &nbsp; Copiar link do convite</button>
-        </div>
+      <aside class="left-panel">
+        <div class="side-scroll">
+          <div class="side-card room-controls">
+            <div class="side-title">CONTROLES DA SALA</div>
+            <small>CÓDIGO DA SALA</small>
+            <div class="room-code-line"><strong id="sideRoomCode">XXXX-XXXX</strong><button id="copyCodeBtn" class="icon-btn">▢</button></div>
+            <div id="roomPrivacyBadge" class="privacy-badge">◈ SALA ABERTA</div>
+            <button id="copyLinkBtn" class="btn primary full small">↗ &nbsp; Copiar link do convite</button>
+            <button id="lockBtn" class="btn ghost full small owner-only">🔒 &nbsp; Trancar sala</button>
+            <button id="closeRoomBtn" class="btn danger-ghost full small owner-only">Encerrar sala</button>
+          </div>
 
-        <div class="members-block">
-          <div class="section-label">NA SALA — <span id="memberCount">1</span></div>
-          <div id="memberList" class="member-list"></div>
-        </div>
+          <div class="participants-block">
+            <div class="side-title row"><span>PARTICIPANTES (<b id="memberCount">1</b>)</span><button id="editAvatarBtn" class="icon-btn" title="Editar avatar">✎</button></div>
+            <div id="memberList" class="member-list"></div>
+          </div>
 
-        <div class="sidebar-spacer"></div>
-
-        <div class="sidebar-bottom">
-          <button id="sidebarShareBtn" class="side-share host-only">⇩ &nbsp; Compartilhar tela</button>
-          <div class="activity-row">
-            <img src="/linozera-logo.png" alt="" />
-            <span>Você entrou como <b id="activityName">—</b></span>
+          <div class="profile-side">
+            <div class="profile-side-head">
+              <img id="roomAvatarImg" src="/linozera-logo.png" alt="" />
+              <div><b id="myNameLabel">Linozera</b><small>Você</small></div>
+            </div>
+            <button id="editAvatarBtn2" class="btn ghost full small">Editar meu avatar</button>
           </div>
         </div>
       </aside>
 
-      <main class="stage">
-        <video id="hostVideo" class="stream-video hidden" autoplay playsinline muted></video>
-        <video id="viewerVideo" class="stream-video hidden" autoplay playsinline controls></video>
-
-        <div id="emptyState" class="empty-state">
-          <div class="screen-icon">▱</div>
-          <h2 id="emptyTitle">Ninguém está compartilhando ainda</h2>
-          <p id="emptyText">Chame alguém com o link da sala ou comece transmitindo a sua tela.</p>
-          <div class="empty-actions host-only">
-            <button id="emptyShareBtn" class="main-btn compact">▣ &nbsp; Compartilhar tela</button>
-            <button id="emptyCopyBtn" class="outline-btn compact">↗ &nbsp; Copiar link</button>
+      <main id="stageArea" class="stage-area">
+        <div class="stage-head">
+          <div><small>◉ &nbsp; TRANSMISSÕES AO VIVO</small><strong id="liveCountLabel">0 apresentando</strong></div>
+          <div class="stage-tools">
+            <button id="gridBtn" class="icon-btn active" title="Grade">▦</button>
+            <button id="focusBtn" class="icon-btn" title="Destaque">▣</button>
           </div>
         </div>
 
-        <div id="hostReconnect" class="stage-overlay hidden">Reconectando ao servidor…</div>
-        <div id="viewerReconnect" class="stage-overlay hidden">O transmissor está reconectando…</div>
+        <div id="streamStage" class="stream-stage grid-layout">
+          <div id="emptyState" class="stage-empty">
+            <div class="empty-icon">▣</div>
+            <h2>Ninguém está compartilhando ainda</h2>
+            <p>Entre como no Meet: clique em <b>Apresentar agora</b>, escolha uma tela, janela ou aba e comece.</p>
+            <button id="emptyShareBtn" class="btn primary">▣ &nbsp; Apresentar agora</button>
+          </div>
+        </div>
+
+        <section id="mixerPanel" class="mixer-panel hidden">
+          <div class="mixer-head"><div><small>≋ &nbsp; MIX DE SOM</small><span>Controle somente o que você ouve</span></div><button id="closeMixerBtn" class="icon-btn">×</button></div>
+          <div class="master-channel">
+            <label><span>VOLUME MASTER</span><b id="masterVolumeLabel">100%</b></label>
+            <input id="masterVolume" type="range" min="0" max="100" value="100" />
+          </div>
+          <div id="mixerChannels" class="mixer-channels"></div>
+          <div class="mixer-note">M = silenciar &nbsp; • &nbsp; S = ouvir somente essa transmissão</div>
+        </section>
 
         <div class="bottom-dock">
-          <button id="dockShareBtn" class="dock-primary host-only">▣ &nbsp; <span id="shareLabel">Compartilhar tela</span></button>
-          <span class="dock-sep host-only"></span>
-          <button id="fullscreenBtn" class="dock-icon" title="Tela cheia">⛶</button>
-          <span class="dock-sep"></span>
-          <button id="leaveBtn" class="dock-icon" title="Sair da sala">↪</button>
+          <button id="shareBtn" class="dock-primary">▣ &nbsp; <span id="shareBtnLabel">Apresentar agora</span></button>
+          <button id="qualityBtn" class="dock-btn">◈ &nbsp; <span id="qualityDockLabel">Automático</span></button>
+          <button id="mixerBtn" class="dock-btn">≋ &nbsp; Mix de som</button>
+          <button id="chatToggleBtn" class="dock-btn">▢ &nbsp; Chat</button>
+          <button id="fullscreenBtn" class="dock-btn icon-only" title="Tela cheia">⛶</button>
+          <button id="leaveBtn" class="dock-btn icon-only leave" title="Sair da sala">↪</button>
         </div>
       </main>
+
+      <aside id="chatPanel" class="chat-panel">
+        <div class="chat-head"><div><small>CHAT DA SALA</small><strong>Conversa em tempo real</strong></div><button id="closeChatBtn" class="icon-btn mobile-only">×</button></div>
+        <div id="chatMessages" class="chat-messages">
+          <div class="chat-empty"><b>▢</b><strong>Nenhuma mensagem ainda</strong><span>Envie uma mensagem para a sala.</span></div>
+        </div>
+        <div class="chat-compose">
+          <textarea id="chatInput" maxlength="500" rows="1" placeholder="Escreva uma mensagem..."></textarea>
+          <button id="sendChatBtn" class="send-btn">➤</button>
+        </div>
+      </aside>
     </div>
   </section>
+
+  <div id="shareModal" class="modal-backdrop hidden">
+    <div class="modal share-modal">
+      <div class="modal-head"><div><small>APRESENTAR AGORA</small><h2>Escolha a qualidade</h2></div><button data-close="shareModal" class="icon-btn">×</button></div>
+      <div class="quality-options">
+        <button data-quality="auto" class="quality-card selected"><b>Automático</b><span>Recomendado</span><small>Adapta ao navegador e à conexão</small></button>
+        <button data-quality="480p30" class="quality-card"><b>480p</b><span>30 FPS</span><small>Internet mais lenta</small></button>
+        <button data-quality="720p30" class="quality-card"><b>720p</b><span>30 FPS</span><small>Equilibrado</small></button>
+        <button data-quality="1080p30" class="quality-card"><b>1080p</b><span>30 FPS</span><small>Alta qualidade</small></button>
+        <button data-quality="1080p60" class="quality-card"><b>1080p</b><span>60 FPS</span><small>Movimento mais fluido</small></button>
+        <button data-quality="1440p60" class="quality-card"><b>1440p</b><span>60 FPS</span><small>Máxima qualidade</small></button>
+      </div>
+      <div class="no-return-box">
+        <b>◇ Modo sem retorno</b>
+        <p>O site não pede microfone e sua própria transmissão fica muda. Para evitar a voz do Discord, prefira compartilhar uma <strong>aba ou janela</strong>; o áudio geral do sistema fica desativado por padrão.</p>
+      </div>
+      <button id="confirmShareBtn" class="btn primary full">Continuar e escolher tela</button>
+    </div>
+  </div>
+
+  <div id="avatarModal" class="modal-backdrop hidden">
+    <div class="modal avatar-modal">
+      <div class="modal-head"><div><small>SEU PERFIL</small><h2>Ajustar avatar</h2></div><button data-close="avatarModal" class="icon-btn">×</button></div>
+      <div class="avatar-editor-grid">
+        <div>
+          <div id="avatarCrop" class="avatar-crop"><img id="avatarEditorImg" src="/linozera-logo.png" alt="Prévia" /></div>
+          <label class="btn ghost full file-btn">Escolher imagem<input id="avatarFile" type="file" accept="image/*" /></label>
+        </div>
+        <div class="avatar-controls">
+          <label>POSICIONAMENTO</label>
+          <div class="direction-pad">
+            <span></span><button data-move="up">↑</button><span></span>
+            <button data-move="left">←</button><button data-move="center">•</button><button data-move="right">→</button>
+            <span></span><button data-move="down">↓</button><span></span>
+          </div>
+          <label>ZOOM <b id="avatarZoomLabel">100%</b></label>
+          <input id="avatarZoom" type="range" min="100" max="240" value="100" />
+          <p>Use as setas para mover a imagem para cima, baixo e para os lados.</p>
+        </div>
+      </div>
+      <button id="saveAvatarBtn" class="btn primary full">Salvar avatar</button>
+    </div>
+  </div>
+
+  <div id="settingsModal" class="modal-backdrop hidden">
+    <div class="modal settings-modal">
+      <div class="modal-head"><div><small>PREFERÊNCIAS</small><h2>Configurações</h2></div><button data-close="settingsModal" class="icon-btn">×</button></div>
+      <div class="setting-row"><div><b>Sons interativos</b><span>Entrada, chat, transmissão, conexão e atualização.</span></div><label class="switch-line compact"><input id="soundToggle" type="checkbox" checked /><i></i></label></div>
+      <div class="setting-row column"><label>Volume dos sons <b id="soundVolumeLabel">45%</b></label><input id="soundVolume" type="range" min="0" max="100" value="45" /></div>
+      <div class="setting-note">Durante sua própria transmissão, os sons da interface ficam suspensos para não entrarem no compartilhamento.</div>
+    </div>
+  </div>
+
+  <div id="updateBanner" class="update-banner hidden">
+    <div><b>Nova atualização disponível</b><span id="updateText">Uma nova versão foi publicada.</span></div>
+    <button id="updateLaterBtn" class="btn ghost small">Depois</button>
+    <button id="updateNowBtn" class="btn primary small">Atualizar agora</button>
+  </div>
 
   <div id="toast" class="toast" role="status"></div>
 

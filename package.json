@@ -1,17 +1,15 @@
 {
-  "name": "linozera-transmissao",
-  "version": "3.0.0",
+  "name": "linozera-transmissao-v4",
+  "version": "4.0.0",
   "private": true,
-  "description": "Sala de transmissão WebRTC com visual Linozera, código de convite e prévia local sem retorno.",
+  "description": "Linozera Transmissão V4: múltiplos compartilhamentos de tela WebRTC, chat, mix de som, avatar e salas trancáveis.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "check": "node --check server.js && node --check public/app.js"
   },
-  "engines": {
-    "node": ">=18"
-  },
+  "engines": { "node": ">=18" },
   "dependencies": {
     "express": "^5.1.0",
     "socket.io": "^4.8.1"
