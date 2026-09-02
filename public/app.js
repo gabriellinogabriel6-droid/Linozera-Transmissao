@@ -48,12 +48,16 @@ let currentRoom = sessionStorage.getItem('lnz_v5_room') || '';
 let ownerToken = sessionStorage.getItem('lnz_v5_owner_token') || '';
 let isOwner = sessionStorage.getItem('lnz_v5_is_owner') === 'true';
 let roomStatus = null;
-let config = { version: '5.0.0', iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+let config = { version: '5.1.0', iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }] };
 let localStream = null;
 let remoteStream = null;
 let remoteHostSocketId = null;
 let attachedRemoteAt = 0;
 let lastBlackRecovery = 0;
+let lastRemoteRequestAt = 0;
+let lastRemoteFrameAt = 0;
+let remoteFrameWatchGeneration = 0;
+let watchedRemoteVideoStream = null;
 let peers = new Map();
 let pendingIce = new Map();
 let peerRecovery = new Map();
@@ -521,25 +525,43 @@ function resetRemoteMedia() {
   if (remoteStream) {
     try { remoteStream.getTracks().forEach(t => { t.onunmute = null; t.onended = null; }); } catch {}
   }
-  remoteStream = null; remoteHostSocketId = null; attachedRemoteAt = 0;
+  remoteStream = null; remoteHostSocketId = null; attachedRemoteAt = 0; lastRemoteFrameAt = 0; remoteFrameWatchGeneration++; watchedRemoteVideoStream = null;
   if ($('stageVideo')) { try { $('stageVideo').pause(); $('stageVideo').srcObject = null; } catch {} }
 }
 function ensureRemoteStream() { if (!remoteStream) remoteStream = new MediaStream(); return remoteStream; }
 function mergeRemoteTrackEvent(event, from) {
+  const track = event?.track;
+  if (!track) return;
   const stream = ensureRemoteStream();
   remoteHostSocketId = from;
-  const candidates = event.streams?.[0]?.getTracks?.() || [event.track];
-  for (const track of candidates) {
-    if (!track || stream.getTracks().some(t => t.id === track.id)) continue;
-    // Keep one live track of each kind; a renegotiation replaces the old one cleanly.
-    for (const old of stream.getTracks().filter(t => t.kind === track.kind && t.id !== track.id)) stream.removeTrack(old);
-    stream.addTrack(track);
-    track.onunmute = () => { attachStageStream(stream, false); renderStage(); };
-    track.onended = () => { try { stream.removeTrack(track); } catch {} renderStage(); };
+  track.enabled = true;
+
+  // IMPORTANT: use only event.track. Some browsers fire one ontrack event per
+  // media kind while event.streams[0] already contains both tracks. Re-adding
+  // every track from event.streams on each event can replace the video track
+  // at the wrong moment and leave the viewer with a black surface.
+  for (const old of [...stream.getTracks()]) {
+    if (old.kind === track.kind && old.id !== track.id) {
+      try { stream.removeTrack(old); } catch {}
+    }
   }
-  attachedRemoteAt = Date.now();
-  attachStageStream(stream, false);
-  rebuildAudioPipeline();
+  if (!stream.getTracks().some(t => t.id === track.id)) stream.addTrack(track);
+
+  if (track.kind === 'video') {
+    attachedRemoteAt = Date.now();
+    lastRemoteFrameAt = 0;
+    track.onunmute = () => { attachStageStream(stream, false); renderStage(); };
+    track.onmute = () => { renderStage(); };
+    track.onended = () => {
+      try { stream.removeTrack(track); } catch {}
+      renderStage();
+      if (!isOwner && ownerMember()?.streaming) setTimeout(() => recoverRemoteVideo('A faixa de vídeo terminou.'), 250);
+    };
+    attachStageStream(stream, false);
+  } else if (track.kind === 'audio') {
+    track.onended = () => { try { stream.removeTrack(track); } catch {} rebuildAudioPipeline(); renderMixer(); };
+    rebuildAudioPipeline();
+  }
   renderStage();
 }
 function createViewerPeer(hostSocketId) {
@@ -550,28 +572,87 @@ function createViewerPeer(hostSocketId) {
 async function requestHostStream(force = false) {
   if (isOwner || !currentRoom || !socket.connected) return;
   if (!force && [...peers.values()].some(pc => ['new', 'connecting', 'connected'].includes(pc.connectionState))) return;
+  lastRemoteRequestAt = Date.now();
   const res = await ackEmit('viewer:request-stream', {}, 3500);
   if (!res?.active && force) toast('Aguardando o transmissor iniciar a tela.');
 }
 function hasLiveRemoteVideo() { return Boolean(remoteStream?.getVideoTracks().some(t => t.readyState === 'live')); }
+function remoteVideoReady() {
+  const video = $('stageVideo');
+  if (!video || !hasLiveRemoteVideo()) return false;
+  if (video.videoWidth <= 0 || video.videoHeight <= 0) return false;
+  // requestVideoFrameCallback is not universal. Dimensions are enough on older browsers.
+  return typeof video.requestVideoFrameCallback !== 'function' || (Date.now() - lastRemoteFrameAt < 7000);
+}
+function watchRemoteFrames(video) {
+  if (!video || typeof video.requestVideoFrameCallback !== 'function' || !video.srcObject) return;
+  if (watchedRemoteVideoStream === video.srcObject) return;
+  watchedRemoteVideoStream = video.srcObject;
+  const generation = ++remoteFrameWatchGeneration;
+  let firstFrame = true;
+  const tick = () => {
+    if (generation !== remoteFrameWatchGeneration || video !== $('stageVideo') || !video.srcObject || watchedRemoteVideoStream !== video.srcObject) return;
+    lastRemoteFrameAt = Date.now();
+    if (firstFrame) { firstFrame = false; renderStage(); }
+    try { video.requestVideoFrameCallback(tick); } catch {}
+  };
+  try { video.requestVideoFrameCallback(tick); } catch {}
+}
 function attachStageStream(stream, local) {
   const video = $('stageVideo');
   if (!video || !stream) return;
   video.muted = true; // áudio remoto passa pelo mixer; local nunca volta para o transmissor.
-  video.playsInline = true; video.autoplay = true;
+  video.playsInline = true; video.autoplay = true; video.preload = 'auto';
+  video.disablePictureInPicture = true;
   if (video.srcObject !== stream) {
+    remoteFrameWatchGeneration++;
+    if (!local) watchedRemoteVideoStream = null;
     try { video.pause(); } catch {}
     video.srcObject = stream;
   }
-  const play = () => video.play().catch(() => {});
+  const play = async () => {
+    try { await video.play(); } catch {}
+    if (!local) {
+      if (video.videoWidth > 0 && video.videoHeight > 0 && typeof video.requestVideoFrameCallback !== 'function') lastRemoteFrameAt = Date.now();
+      watchRemoteFrames(video);
+    }
+  };
   video.onloadedmetadata = play;
+  video.onloadeddata = play;
   video.oncanplay = play;
+  video.onplaying = () => {
+    if (!local && video.videoWidth > 0 && video.videoHeight > 0 && typeof video.requestVideoFrameCallback !== 'function') {
+      lastRemoteFrameAt = Date.now(); renderStage();
+    }
+  };
   requestAnimationFrame(play);
   if (local) video.setAttribute('aria-label', 'Prévia local muda');
+  else video.setAttribute('aria-label', 'Transmissão remota');
+}
+async function waitForLocalVideoFrame(stream, timeout = 4500) {
+  const track = stream?.getVideoTracks?.()[0];
+  if (!track) return false;
+  const probe = document.createElement('video');
+  probe.muted = true; probe.playsInline = true; probe.autoplay = true;
+  probe.style.cssText = 'position:fixed;width:2px;height:2px;opacity:0;pointer-events:none;left:-10px;top:-10px';
+  probe.srcObject = new MediaStream([track]);
+  document.body.appendChild(probe);
+  return await new Promise(resolve => {
+    let done = false;
+    const finish = ok => { if (done) return; done = true; clearTimeout(timer); try { probe.pause(); probe.srcObject = null; probe.remove(); } catch {} resolve(ok); };
+    const check = () => { if (probe.videoWidth > 0 && probe.videoHeight > 0 && track.readyState === 'live' && !track.muted) finish(true); };
+    probe.onloadedmetadata = check; probe.onloadeddata = check; probe.onplaying = check;
+    const timer = setTimeout(() => finish(probe.videoWidth > 0 && probe.videoHeight > 0 && track.readyState === 'live'), timeout);
+    probe.play().then(check).catch(() => {});
+    if (typeof probe.requestVideoFrameCallback === 'function') { try { probe.requestVideoFrameCallback(() => finish(true)); } catch {} }
+  });
 }
 async function safeGetDisplayMedia() {
   const q = QUALITY[selectedQuality] || QUALITY.auto;
-  const video = { width: { ideal: q.width }, height: { ideal: q.height }, frameRate: { ideal: q.fps, max: q.fps } };
+  // Do not force capture width/height. Chrome/Windows can create a black or unstable
+  // capture surface when the browser has to rescale some GPU-composited windows.
+  // Capture at the source's native size and control bandwidth in RTCRtpSender instead.
+  const video = { frameRate: { ideal: Math.min(q.fps, 60), max: Math.min(q.fps, 60) } };
   const preferred = {
     video,
     audio: { restrictOwnAudio: true },
@@ -584,7 +665,7 @@ async function safeGetDisplayMedia() {
   try { return await navigator.mediaDevices.getDisplayMedia(preferred); }
   catch (err) {
     if (err?.name !== 'TypeError') throw err;
-    return navigator.mediaDevices.getDisplayMedia({ video, audio: true });
+    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   }
 }
 async function startSharing() {
@@ -594,6 +675,12 @@ async function startSharing() {
     const stream = await safeGetDisplayMedia();
     const videoTrack = stream.getVideoTracks()[0];
     if (!videoTrack) { stream.getTracks().forEach(t => t.stop()); throw new Error('Nenhuma faixa de vídeo foi recebida.'); }
+    const localFrameOk = await waitForLocalVideoFrame(stream);
+    if (!localFrameOk) {
+      stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
+      toast('A fonte escolhida não entregou imagem. Se for jogo/tela cheia, use modo Janela sem borda e compartilhe a Janela.', 7000);
+      return;
+    }
     const surface = videoTrack.getSettings?.().displaySurface || '';
     videoTrack.contentHint = (QUALITY[selectedQuality]?.fps || 30) >= 50 ? 'motion' : 'detail';
     // Monitor/tela inteira pode carregar Discord e a própria voz. Remover áudio é a forma segura.
@@ -692,18 +779,31 @@ function startAdaptiveMonitor() {
 }
 function stopAdaptiveMonitor() { if (adaptiveTimer) clearInterval(adaptiveTimer); adaptiveTimer = null; }
 
-/* Black-screen watchdog: recovers only when video track exists but no decoded dimensions. */
+async function recoverRemoteVideo(reason = '') {
+  if (!currentRoom || isOwner || !ownerMember()?.streaming || Date.now() - lastBlackRecovery < 7000) return;
+  lastBlackRecovery = Date.now();
+  console.warn('Recuperando transmissão', reason);
+  toast('Recuperando o vídeo da transmissão…');
+  closeAllPeers();
+  resetRemoteMedia();
+  await sleep(250);
+  requestHostStream(true);
+}
+
+/* Black-screen watchdog. It also recovers when NO video track arrives. */
 setInterval(() => {
-  if (!currentRoom || isOwner || !ownerMember()?.streaming || !hasLiveRemoteVideo()) return;
+  if (!currentRoom || isOwner || !ownerMember()?.streaming) return;
+  const now = Date.now();
   const video = $('stageVideo');
-  if (!video || Date.now() - attachedRemoteAt < 4500) return;
-  const black = video.videoWidth === 0 || video.videoHeight === 0;
-  if (black && Date.now() - lastBlackRecovery > 10_000) {
-    lastBlackRecovery = Date.now();
-    toast('Recuperando o vídeo da transmissão…');
-    closeAllPeers(); resetRemoteMedia(); requestHostStream(true);
+  if (!hasLiveRemoteVideo()) {
+    if (lastRemoteRequestAt && now - lastRemoteRequestAt > 5500) recoverRemoteVideo('Nenhuma faixa de vídeo chegou.');
+    return;
   }
-}, 2500);
+  if (!video || now - attachedRemoteAt < 3500) return;
+  const noDimensions = video.videoWidth === 0 || video.videoHeight === 0;
+  const noRecentFrame = typeof video.requestVideoFrameCallback === 'function' && (!lastRemoteFrameAt || now - lastRemoteFrameAt > 6000);
+  if (noDimensions || noRecentFrame) recoverRemoteVideo(noDimensions ? 'Vídeo sem dimensões.' : 'Vídeo sem novos quadros.');
+}, 2000);
 
 /* ---------- stream/server events ---------- */
 socket.on('connect', async () => {
@@ -769,17 +869,19 @@ function renderStage() {
   const owner = ownerMember();
   const streaming = isOwner ? Boolean(localStream) : Boolean(owner?.streaming);
   $('presentingCount').textContent = streaming ? '1 apresentando' : '0 apresentando';
-  $('stagePlaceholder').classList.toggle('hidden', streaming && (isOwner ? localStream : hasLiveRemoteVideo()));
-  $('videoSurface').classList.toggle('hidden', !(streaming && (isOwner ? localStream : hasLiveRemoteVideo())));
+  const viewerReady = isOwner ? Boolean(localStream) : remoteVideoReady();
+  $('stagePlaceholder').classList.toggle('hidden', streaming && viewerReady);
+  $('videoSurface').classList.toggle('hidden', !(streaming && viewerReady));
   if (isOwner && localStream) attachStageStream(localStream, true);
   else if (!isOwner && remoteStream && hasLiveRemoteVideo()) attachStageStream(remoteStream, false);
 
   if (!streaming) {
     $('placeholderText').innerHTML = isOwner ? 'Clique em <b>Apresentar agora</b>, escolha uma tela, janela ou aba e comece.' : 'Aguardando o dono da sala iniciar a apresentação.';
     $('viewerWaitingLabel').textContent = 'Aguardando o dono iniciar a transmissão.';
-  } else if (!isOwner && !hasLiveRemoteVideo()) {
+  } else if (!isOwner && !remoteVideoReady()) {
     $('stagePlaceholder').classList.remove('hidden');
-    $('placeholderText').textContent = 'Conectando ao vídeo da transmissão…';
+    $('videoSurface').classList.add('hidden');
+    $('placeholderText').textContent = hasLiveRemoteVideo() ? 'Recebendo e decodificando o vídeo…' : 'Conectando ao vídeo da transmissão…';
   }
   const presenter = isOwner ? (meMember() || { name: currentNickname, avatar: currentAvatar, quality: QUALITY[selectedQuality].label, audio: localStream?.getAudioTracks().length > 0 }) : owner;
   if (presenter) {

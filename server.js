@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 const PORT = Number(process.env.PORT || 3000);
 const ROOM_EMPTY_TTL_MS = 2 * 60 * 1000;
 const OWNER_RECONNECT_GRACE_MS = 35 * 1000;
@@ -52,7 +52,7 @@ app.get('/health', (_req, res) => {
 app.get('/api/config', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   const iceServers = [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302', 'stun:stun3.l.google.com:19302'] }
   ];
   if (process.env.TURN_URL) {
     iceServers.push({
@@ -61,7 +61,7 @@ app.get('/api/config', (_req, res) => {
       credential: process.env.TURN_CREDENTIAL || ''
     });
   }
-  res.json({ version: APP_VERSION, iceServers, transmissionEngine: 'single-presenter-stable-v5' });
+  res.json({ version: APP_VERSION, iceServers, transmissionEngine: 'single-presenter-black-screen-fix-v5.1' });
 });
 
 app.get('/api/version', (_req, res) => {
@@ -69,6 +69,9 @@ app.get('/api/version', (_req, res) => {
   res.json({
     version: APP_VERSION,
     notes: [
+      'Correção V5.1 para tela preta: receptor aguarda quadro real antes de exibir o player',
+      'Recuperação automática também quando nenhuma faixa de vídeo chega',
+      'Captura em resolução nativa para evitar falhas de GPU/redimensionamento no Chrome/Windows',
       'Interface reconstruída do zero com layout responsivo e profissional',
       'Salas públicas aparecem no lobby em tempo real e têm atualização de segurança a cada 5 segundos',
       'Motor de transmissão estabilizado sem redimensionamento agressivo durante a apresentação',

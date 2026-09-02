@@ -1,6 +1,6 @@
-# Linozera Transmissão V5 Pro
+# Linozera Transmissão V5.1 Pro — Correção Tela Preta
 
-Reconstrução do projeto com foco em aparência profissional, estabilidade e correção de tela preta.
+Versão 5.1 com foco principal na correção de tela preta, estabilidade WebRTC e captura mais compatível com Chrome/Windows.
 
 ## Principais mudanças
 
@@ -9,8 +9,11 @@ Reconstrução do projeto com foco em aparência profissional, estabilidade e co
 - Salas públicas aparecem no lobby em tempo real e também são atualizadas a cada 5 segundos.
 - Botão **Atualizar** do lobby e **Atualizar sala** funcionais.
 - Motor WebRTC de um apresentador principal (dono da sala) para espectadores.
-- Correção de tela preta: as faixas de vídeo/áudio recebidas são acumuladas no mesmo `MediaStream`; áudio não substitui mais o vídeo.
-- Watchdog de vídeo: se houver track de vídeo ativa mas nenhum quadro decodificado, o espectador reconecta automaticamente.
+- Correção de tela preta: o receptor usa apenas `event.track` de cada evento WebRTC e mantém uma faixa de vídeo estável.
+- O player só é mostrado depois que um quadro real foi decodificado.
+- Se nenhuma faixa chegar ou se os quadros pararem, o espectador renegocia a conexão automaticamente.
+- A captura usa a resolução nativa da fonte; a qualidade é controlada no envio, evitando tela preta/tremedeira causada por redimensionamento de GPU.
+- Watchdog de vídeo cobre tanto faixa ausente quanto faixa sem quadros decodificados.
 - ICE recebido antes da oferta SDP é preservado, evitando conexões incompletas.
 - Reconexão automática Socket.IO + WebRTC.
 - Captura sem redimensionamento agressivo durante a apresentação para evitar “tremedeira”.

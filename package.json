@@ -1,6 +1,6 @@
 {
   "name": "linozera-transmissao-v5-pro",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "private": true,
   "description": "Linozera Transmissão V5 Pro — compartilhamento de tela profissional, salas em tempo real, chat, mixer e modo sem retorno.",
   "main": "server.js",
