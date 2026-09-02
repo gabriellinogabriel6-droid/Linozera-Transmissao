@@ -1,23 +1,32 @@
-const BUILD_VERSION = '4.2.0';
+const BUILD_VERSION = '4.6.0';
 const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
 const socket = io({ transports: ['websocket', 'polling'] });
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
 const QUALITY = {
-  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
-  '480p30': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1500000 },
-  '720p30': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 3000000 },
-  '1080p30': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
-  '1080p60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 9000000 },
-  '1440p60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 14000000 }
+  // Tetos mais conservadores: o navegador ainda pode reduzir abaixo deles quando a rede aperta.
+  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 5000000 },
+  '480p30': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1200000 },
+  '720p30': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 2500000 },
+  '1080p30': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 4500000 },
+  '1080p60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 7000000 },
+  '1440p60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 10000000 }
 };
+const ADAPTIVE_INTERVAL_MS = 3500;
+const PEER_RESTART_DELAY_MS = 1800;
+const MAX_PEER_RESTARTS_WINDOW_MS = 15000;
 
 const makeClientId = () => globalThis.crypto?.randomUUID ? crypto.randomUUID() : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const clientId = localStorage.getItem('lnz_client_id') || makeClientId();
 localStorage.setItem('lnz_client_id', clientId);
 
-let rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+let rtcConfig = {
+  iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require',
+  iceCandidatePoolSize: 4
+};
 let currentRoom = null;
 let currentNickname = localStorage.getItem('lnz_nickname') || '';
 let currentAvatar = localStorage.getItem('lnz_avatar') || '';
@@ -28,6 +37,7 @@ let roomPublic = false;
 let members = new Map();
 let localStream = null;
 let selectedQuality = localStorage.getItem('lnz_quality') || 'auto';
+if (!QUALITY[selectedQuality]) selectedQuality = 'auto';
 let layoutMode = 'grid';
 let focusedClientId = null;
 let reconnecting = false;
@@ -35,24 +45,35 @@ let reconnecting = false;
 const peers = new Map();
 const pendingIce = new Map();
 const knownViewers = new Set();
+const peerRecoveryTimers = new Map();
+const peerRestartHistory = new Map();
+const peerHealth = new Map();
+const peerBuilds = new Set();
+let adaptiveTimer = null;
 let viewerHostId = null;
 const remoteStreams = new Map();
 const chatIds = new Set();
 const channelMix = new Map();
-let masterVolume = 1;
+const audioPipelines = new Map();
+let masterVolume = Math.max(0, Math.min(1.5, Number(localStorage.getItem('lnz_master_volume') ?? '110') / 100));
 let soloClientId = null;
 
 let soundEnabled = localStorage.getItem('lnz_sounds') !== '0';
-let soundVolume = Number(localStorage.getItem('lnz_sound_volume') ?? '45') / 100;
+let soundVolume = Math.max(0, Math.min(1, Number(localStorage.getItem('lnz_sound_volume') ?? '70') / 100));
+let autoChatOpen = localStorage.getItem('lnz_auto_chat') !== '0';
+let audioBoostEnabled = localStorage.getItem('lnz_audio_boost') !== '0';
 let audioContext = null;
+let publicRoomsLoading = false;
 
-let avatarSource = currentAvatar || '/linozera-logo.png';
+let avatarSource = currentAvatar || '/default-avatar.png';
 let avatarX = 0;
 let avatarY = 0;
 let avatarZoom = 1;
 
 fetch('/api/config').then(r => r.json()).then(cfg => {
-  if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) rtcConfig = { iceServers: cfg.iceServers };
+  if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) {
+    rtcConfig = { ...rtcConfig, iceServers: cfg.iceServers };
+  }
 }).catch(() => {});
 
 function normalizeRoom(value) {
@@ -66,7 +87,7 @@ function sanitizeNickname(value) {
   return String(value || '').replace(/[<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
 }
 function safeAvatar(avatar) {
-  return avatar && avatar.startsWith('data:image/') ? avatar : '/linozera-logo.png';
+  return avatar && avatar.startsWith('data:image/') ? avatar : '/default-avatar.png';
 }
 function initials(name) {
   return String(name || '?').trim().slice(0, 1).toUpperCase() || '?';
@@ -114,7 +135,7 @@ function updateNicknameCounter() {
   $('nickCount').textContent = `${value.length}/24`;
 }
 function updateProfileImages() {
-  const src = currentAvatar || '/linozera-logo.png';
+  const src = currentAvatar || '/default-avatar.png';
   $('homeAvatarImg').src = src;
   $('roomAvatarImg').src = src;
   $('myNameLabel').textContent = currentNickname || 'Você';
@@ -146,42 +167,166 @@ function playUISound(type = 'tap') {
     osc.start(); osc.stop(ctx.currentTime + dur);
   } catch {}
 }
-document.addEventListener('pointerdown', () => { if (soundEnabled) ensureAudioContext(); }, { once: true });
+document.addEventListener('pointerdown', () => { if (soundEnabled || audioBoostEnabled) ensureAudioContext(); }, { once: true });
+
+/* Áudio recebido: Web Audio permite reforço acima de 100% sem mexer no áudio enviado. */
+function disposeAudioPipeline(id) {
+  const pipe = audioPipelines.get(id);
+  if (!pipe) return;
+  try { pipe.source.disconnect(); } catch {}
+  try { pipe.gain.disconnect(); } catch {}
+  audioPipelines.delete(id);
+}
+function disposeAllAudioPipelines() {
+  [...audioPipelines.keys()].forEach(disposeAudioPipeline);
+}
+function ensureRemoteAudioPipeline(id, stream) {
+  if (!id || id === clientId || !stream?.getAudioTracks?.().length) {
+    disposeAudioPipeline(id);
+    return null;
+  }
+  const existing = audioPipelines.get(id);
+  if (existing?.stream === stream) return existing;
+  disposeAudioPipeline(id);
+  try {
+    const ctx = ensureAudioContext();
+    const audioOnly = new MediaStream(stream.getAudioTracks());
+    const source = ctx.createMediaStreamSource(audioOnly);
+    const gain = ctx.createGain();
+    source.connect(gain).connect(ctx.destination);
+    const pipe = { stream, source, gain };
+    audioPipelines.set(id, pipe);
+    return pipe;
+  } catch (error) {
+    console.warn('Áudio reforçado indisponível; usando volume padrão do navegador.', error);
+    return null;
+  }
+}
 
 /* Lobby */
-async function loadPublicRooms() {
+async function loadPublicRooms(showFeedback = false) {
   const grid = $('publicRoomsGrid');
+  const status = $('publicRoomsStatus');
+  const button = $('refreshRoomsBtn');
+  if (!grid || publicRoomsLoading) return;
+  publicRoomsLoading = true;
+  if (button) { button.disabled = true; button.classList.add('loading'); button.textContent = '↻ Atualizando…'; }
+  if (status) status.textContent = 'Buscando salas no servidor…';
   try {
-    const data = await fetch('/api/public-rooms', { cache: 'no-store' }).then(r => r.json());
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    const response = await fetch(`/api/public-rooms?t=${Date.now()}`, { cache: 'no-store', signal: controller.signal });
+    clearTimeout(timer);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
     const list = Array.isArray(data.rooms) ? data.rooms : [];
     if (!list.length) {
-      grid.innerHTML = '<div class="public-empty">Nenhuma sala pública ao vivo agora.</div>';
-      return;
+      grid.innerHTML = '<div class="public-empty"><b>Nenhuma sala pública agora.</b><span>Crie uma sala e ative “Listar minha sala no lobby”.</span></div>';
+    } else {
+      grid.innerHTML = list.map(room => {
+        const live = Boolean(room.streaming);
+        const locked = Boolean(room.locked);
+        const badge = locked ? '🔒 TRANCADA' : (live ? '● AO VIVO' : '◌ ABERTA');
+        const badgeClass = locked ? 'locked' : (live ? 'live' : 'open');
+        return `
+          <article class="public-card ${locked ? 'is-locked' : ''}" data-room="${escapeHtml(room.roomId)}" data-locked="${locked ? '1' : '0'}">
+            <div class="public-thumb"><span class="live-badge ${badgeClass}">${badge}</span><div class="public-logo-mark">LNZ</div></div>
+            <div class="public-info">
+              <h3>${escapeHtml(room.roomId)}</h3>
+              <p>${escapeHtml(room.ownerName || 'Linozera')}</p>
+              <div class="public-stats"><span>♙ ${Number(room.members || 0)} na sala</span><span>${live ? '▥ transmitindo' : '◌ aguardando'}</span></div>
+              <span class="privacy-badge">${locked ? 'SALA TRANCADA' : 'ENTRAR NA SALA →'}</span>
+            </div>
+          </article>`;
+      }).join('');
+      $$('.public-card').forEach(card => card.addEventListener('click', () => {
+        $('roomInput').value = card.dataset.room;
+        $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (card.dataset.locked === '1') toast('Essa sala está trancada. O dono precisa destrancar para novos participantes.');
+        else toast(`Sala ${card.dataset.room} selecionada.`);
+      }));
     }
-    grid.innerHTML = list.map(room => `
-      <article class="public-card" data-room="${escapeHtml(room.roomId)}">
-        <div class="public-thumb"><span class="live-badge">AO VIVO</span></div>
-        <div class="public-info">
-          <h3>${escapeHtml(room.roomId)}</h3>
-          <p>${escapeHtml(room.ownerName || 'Linozera')}</p>
-          <div class="public-stats"><span>♙ ${room.members}</span><span>◉ ${room.streaming} transmitindo</span></div>
-          <span class="privacy-badge">ENTRAR NA SALA →</span>
-        </div>
-      </article>`).join('');
-    $$('.public-card').forEach(card => card.addEventListener('click', () => {
-      $('roomInput').value = card.dataset.room;
-      $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }));
-  } catch {
-    grid.innerHTML = '<div class="public-empty">Não foi possível carregar as salas agora.</div>';
+    const now = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    if (status) status.textContent = `${list.length} sala${list.length === 1 ? '' : 's'} • atualizado às ${now}`;
+    if (showFeedback) toast(list.length ? `${list.length} sala(s) pública(s) encontrada(s).` : 'Lista atualizada. Nenhuma sala pública agora.');
+  } catch (error) {
+    console.error('Falha ao carregar salas públicas', error);
+    grid.innerHTML = '<div class="public-empty error"><b>Não foi possível carregar as salas.</b><span>Confira a conexão com o Render e tente novamente.</span></div>';
+    if (status) status.textContent = 'Falha ao atualizar';
+    if (showFeedback) toast('Falha ao atualizar as salas públicas.');
+  } finally {
+    publicRoomsLoading = false;
+    if (button) { button.disabled = false; button.classList.remove('loading'); button.textContent = 'Ver todas as salas  →'; }
   }
+}
+
+function syncSettingsUI() {
+  const soundToggle = $('soundToggle');
+  const soundRange = $('soundVolume');
+  const autoChat = $('autoChatToggle');
+  const defaultMaster = $('defaultMasterVolume');
+  const boost = $('audioBoostToggle');
+  const quality = $('defaultQualitySelect');
+  const roomUnavailable = $('roomSettingsUnavailable');
+  const roomControls = $('roomSettingsControls');
+  const roomPublicToggle = $('roomPublicToggleSettings');
+  const roomLockToggle = $('roomLockToggleSettings');
+
+  if (soundToggle) soundToggle.checked = soundEnabled;
+  if (soundRange) soundRange.value = String(Math.round(soundVolume * 100));
+  if ($('soundVolumeLabel')) $('soundVolumeLabel').textContent = `${Math.round(soundVolume * 100)}%`;
+  if (autoChat) autoChat.checked = autoChatOpen;
+
+  const masterPct = Math.round(masterVolume * 100);
+  if ($('masterVolume')) $('masterVolume').value = String(masterPct);
+  if ($('masterVolumeLabel')) $('masterVolumeLabel').textContent = `${masterPct}%`;
+  if (defaultMaster) defaultMaster.value = String(masterPct);
+  if ($('defaultMasterVolumeLabel')) $('defaultMasterVolumeLabel').textContent = `${masterPct}%`;
+  if (boost) boost.checked = audioBoostEnabled;
+  if (quality) quality.value = selectedQuality;
+
+  const inRoom = Boolean(currentRoom);
+  if (roomUnavailable) roomUnavailable.classList.toggle('hidden', inRoom);
+  if (roomControls) roomControls.classList.toggle('hidden', !inRoom);
+  if (roomPublicToggle) {
+    roomPublicToggle.checked = roomPublic;
+    roomPublicToggle.disabled = !isOwner;
+  }
+  if (roomLockToggle) {
+    roomLockToggle.checked = roomLocked;
+    roomLockToggle.disabled = !isOwner;
+  }
+  if ($('settingsRefreshRoomBtn')) $('settingsRefreshRoomBtn').disabled = !inRoom;
+  if ($('settingsCopyInviteBtn')) $('settingsCopyInviteBtn').disabled = !inRoom;
+  if ($('settingsCloseRoomBtn')) $('settingsCloseRoomBtn').disabled = !inRoom || !isOwner;
+  if ($('roomSettingsStatus')) {
+    $('roomSettingsStatus').textContent = inRoom
+      ? (isOwner ? 'Você é o dono desta sala.' : 'Somente o dono pode alterar visibilidade e bloqueio.')
+      : 'Entre em uma sala para usar estas opções.';
+  }
+}
+
+function openSettings(tab = 'general') {
+  syncSettingsUI();
+  const target = currentRoom && tab === 'room' ? 'room' : tab;
+  $$('.settings-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.settingsTab === target));
+  $$('[data-settings-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.settingsPane === target));
+  showModal('settingsModal');
+}
+
+function selectSettingsTab(tab) {
+  $$('.settings-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.settingsTab === tab));
+  $$('[data-settings-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.settingsPane === tab));
+  syncSettingsUI();
 }
 
 function showRoom() {
   $('home').classList.add('hidden');
   $('roomView').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
+  $('chatPanel').classList.toggle('closed', !autoChatOpen);
   updateProfileImages();
+  syncSettingsUI();
 }
 function showHome() {
   $('roomView').classList.add('hidden');
@@ -191,6 +336,7 @@ function showHome() {
 }
 
 function createRoom() {
+  try { ensureAudioContext(); } catch {}
   const nickname = requireNickname();
   if (!nickname) return;
   playUISound('tap');
@@ -198,7 +344,7 @@ function createRoom() {
     clientId,
     nickname,
     avatar: currentAvatar,
-    isPublic: $('publicToggle').checked
+    isPublic: !$('publicToggle').checked
   }, result => {
     if (!result?.ok) return toast(result?.error || 'Não foi possível criar a sala.');
     currentRoom = normalizeRoom(result.roomId);
@@ -210,6 +356,7 @@ function createRoom() {
   });
 }
 function joinRoom(value, fromReconnect = false) {
+  if (!fromReconnect) { try { ensureAudioContext(); } catch {} }
   const nickname = fromReconnect ? currentNickname : requireNickname();
   if (!nickname) return;
   const roomId = normalizeRoom(value);
@@ -284,6 +431,7 @@ function renderRoomState() {
   $('lockBtn').innerHTML = roomLocked ? '🔓 &nbsp; Destrancar sala' : '🔒 &nbsp; Trancar sala';
   [$('shareBtn'), $('emptyShareBtn'), $('qualityBtn')].forEach(el => { if (el) { el.disabled = !isOwner; el.classList.toggle('disabled', !isOwner); } });
   if (!localStream) $('shareBtnLabel').textContent = isOwner ? 'Compartilhar tela' : 'Somente assistir';
+  syncSettingsUI();
 }
 
 function avatarMarkup(member, cls = 'member-avatar') {
@@ -309,14 +457,47 @@ function findMemberBySocket(socketId) {
   for (const member of members.values()) if (member.socketId === socketId) return member;
   return null;
 }
-function toggleLock() {
-  if (!isOwner) return;
-  socket.emit('room:lock', { locked: !roomLocked }, result => {
+function setRoomLock(nextLocked, showFeedback = true) {
+  if (!isOwner) return showFeedback && toast('Apenas o dono da sala pode alterar o bloqueio.');
+  socket.emit('room:lock', { locked: Boolean(nextLocked) }, result => {
     if (!result?.ok) return toast(result?.error || 'Não foi possível alterar a sala.');
     roomLocked = Boolean(result.locked);
     renderRoomState();
+    syncSettingsUI();
     playUISound(roomLocked ? 'lock' : 'unlock');
+    if (showFeedback) toast(roomLocked ? 'Sala trancada.' : 'Sala destrancada.');
   });
+}
+function toggleLock() { setRoomLock(!roomLocked); }
+function setRoomVisibility(nextPublic, showFeedback = true) {
+  if (!isOwner) return showFeedback && toast('Apenas o dono pode alterar a visibilidade da sala.');
+  socket.emit('room:visibility', { isPublic: Boolean(nextPublic) }, result => {
+    if (!result?.ok) return toast(result?.error || 'Não foi possível alterar a visibilidade.');
+    roomPublic = Boolean(result.isPublic);
+    renderRoomState();
+    syncSettingsUI();
+    if (showFeedback) toast(roomPublic ? 'Sala pública: ela aparecerá no lobby.' : 'Sala privada: removida do lobby.');
+    loadPublicRooms();
+  });
+}
+function refreshRoomStatus(showFeedback = true) {
+  if (!currentRoom) return showFeedback && toast('Você ainda não entrou em uma sala.');
+  const buttons = [$('refreshRoomBtn'), $('settingsRefreshRoomBtn')].filter(Boolean);
+  buttons.forEach(btn => { btn.disabled = true; btn.dataset.oldText ||= btn.textContent; btn.textContent = '↻ Atualizando…'; });
+  let finished = false;
+  const finish = (result) => {
+    if (finished) return;
+    finished = true;
+    buttons.forEach(btn => { btn.disabled = false; btn.textContent = btn.dataset.oldText || '↻ Atualizar sala'; });
+    if (result?.ok && result.status) {
+      applyRoomStatus(result.status);
+      const now = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+      if ($('roomSettingsStatus')) $('roomSettingsStatus').textContent = `Sala sincronizada às ${now}.`;
+      if (showFeedback) toast('Sala atualizada com o servidor.');
+    } else if (showFeedback) toast(result?.error || 'Não foi possível atualizar a sala.');
+  };
+  const timer = setTimeout(() => finish({ ok:false, error:'O servidor demorou para responder.' }), 6000);
+  socket.emit('room:status', {}, result => { clearTimeout(timer); finish(result); });
 }
 function closeRoom() {
   if (!isOwner || !confirm('Encerrar a sala para todos?')) return;
@@ -332,34 +513,61 @@ function leaveRoom() {
   playUISound('leave');
 }
 function resetRoomState() {
+  // Garante que nenhuma captura continue escondida após sair/encerrar/substituir a sessão.
+  if (localStream) {
+    localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
+    localStream = null;
+  }
+  stopAdaptiveMonitor();
   closeAllPeers();
   knownViewers.clear();
   viewerHostId = null;
   remoteStreams.clear();
+  disposeAllAudioPipelines();
   members.clear();
+  channelMix.clear();
+  soloClientId = null;
   chatIds.clear();
   $('chatMessages').innerHTML = '<div class="chat-empty"><b>▢</b><strong>Nenhuma mensagem ainda</strong><span>Envie uma mensagem para a sala.</span></div>';
+  const previousRoom = currentRoom;
   currentRoom = null;
   isOwner = false;
+  ownerToken = null;
   roomLocked = false;
+  roomPublic = false;
+  if (normalizeRoom(sessionStorage.getItem('lnz_owner_room')) === normalizeRoom(previousRoom)) {
+    sessionStorage.removeItem('lnz_owner_room');
+    sessionStorage.removeItem('lnz_owner_token');
+  }
+  $('shareBtnLabel').textContent = 'Compartilhar tela';
+  $('shareBtn').classList.remove('stop');
   setRoomUrl(null);
   syncStreamTiles();
 }
 
 /* WebRTC estável da V3: um transmissor principal (dono) -> espectadores */
+function clearPeerRecovery(peerId) {
+  const timer = peerRecoveryTimers.get(peerId);
+  if (timer) clearTimeout(timer);
+  peerRecoveryTimers.delete(peerId);
+}
 function closePeer(peerId) {
+  clearPeerRecovery(peerId);
   const pc = peers.get(peerId);
   if (pc) {
     pc.onicecandidate = null;
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
+    pc.oniceconnectionstatechange = null;
     try { pc.close(); } catch {}
   }
   peers.delete(peerId);
   pendingIce.delete(peerId);
+  peerHealth.delete(peerId);
 }
 function closeAllPeers() {
   [...peers.keys()].forEach(closePeer);
+  stopAdaptiveMonitor();
 }
 function cleanupPeersForMembers() {
   const sockets = new Set([...members.values()].map(m => m.socketId).filter(Boolean));
@@ -378,6 +586,28 @@ async function flushIce(peerId, pc) {
     try { await pc.addIceCandidate(candidate); } catch (err) { console.warn('ICE ignorado', err); }
   }
 }
+function canRestartPeer(peerId) {
+  const now = Date.now();
+  const recent = (peerRestartHistory.get(peerId) || []).filter(t => now - t < MAX_PEER_RESTARTS_WINDOW_MS);
+  if (recent.length >= 3) return false;
+  recent.push(now);
+  peerRestartHistory.set(peerId, recent);
+  return true;
+}
+function schedulePeerRecovery(peerId, mode, immediate = false) {
+  if (!peerId || peerRecoveryTimers.has(peerId) || !currentRoom) return;
+  const delay = immediate ? 250 : PEER_RESTART_DELAY_MS;
+  const timer = setTimeout(() => {
+    peerRecoveryTimers.delete(peerId);
+    if (!socket.connected || !currentRoom || !canRestartPeer(peerId)) return;
+    if (mode === 'host' && isOwner && localStream && knownViewers.has(peerId)) {
+      makeHostPeer(peerId, true);
+    } else if (mode === 'viewer' && !isOwner && viewerHostId === peerId) {
+      socket.emit('webrtc:restart-request', { target: peerId });
+    }
+  }, delay);
+  peerRecoveryTimers.set(peerId, timer);
+}
 function makePeer(peerId, mode) {
   closePeer(peerId);
   const pc = new RTCPeerConnection(rtcConfig);
@@ -385,25 +615,138 @@ function makePeer(peerId, mode) {
   pc.onicecandidate = event => {
     if (event.candidate) socket.emit('webrtc:ice', { target: peerId, candidate: event.candidate });
   };
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      if (mode === 'viewer') toast('A conexão direta falhou. Configure um TURN no Render para redes restritas.', 4500);
-      closePeer(peerId);
+  const watchState = () => {
+    const state = pc.connectionState;
+    const ice = pc.iceConnectionState;
+    if (state === 'connected' || ice === 'connected' || ice === 'completed') {
+      clearPeerRecovery(peerId);
+      peerRestartHistory.delete(peerId);
+      if (isOwner && localStream) startAdaptiveMonitor();
+      return;
     }
+    if (state === 'failed' || ice === 'failed') {
+      schedulePeerRecovery(peerId, mode, true);
+      return;
+    }
+    if (state === 'disconnected' || ice === 'disconnected') schedulePeerRecovery(peerId, mode, false);
   };
+  pc.onconnectionstatechange = watchState;
+  pc.oniceconnectionstatechange = watchState;
   return pc;
 }
-async function applySenderBitrate(pc) {
+function targetSenderProfile(peerId) {
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
+  let bitrate = cfg.bitrate;
+  let scale = 1;
+  let fps = cfg.fps;
+  let degradationPreference = cfg.fps >= 50 ? 'maintain-framerate' : 'balanced';
+
+  // P2P envia uma cópia por espectador. No Automático, reduzimos o custo por conexão
+  // quando há mais pessoas para impedir que o upload do transmissor fique saturado.
+  if (selectedQuality === 'auto') {
+    const viewers = Math.max(1, knownViewers.size);
+    if (viewers >= 5) { bitrate = Math.min(bitrate, 1800000); scale = 2; fps = 24; }
+    else if (viewers >= 3) { bitrate = Math.min(bitrate, 2600000); scale = 1.5; fps = 30; }
+    else if (viewers >= 2) { bitrate = Math.min(bitrate, 3600000); scale = 1.25; }
+
+    const health = peerHealth.get(peerId);
+    if (health) {
+      const { availableBitrate, rtt, loss, bandwidthLimited } = health;
+      if (Number.isFinite(availableBitrate) && availableBitrate > 0) bitrate = Math.min(bitrate, Math.max(700000, availableBitrate * 0.75));
+      if (bandwidthLimited || loss > 0.07 || rtt > 0.35) {
+        bitrate = Math.min(bitrate, 2200000);
+        scale = Math.max(scale, 1.5);
+        fps = Math.min(fps, 30);
+        degradationPreference = 'maintain-framerate';
+      }
+      if (loss > 0.14 || rtt > 0.65) {
+        bitrate = Math.min(bitrate, 1300000);
+        scale = Math.max(scale, 2);
+        fps = Math.min(fps, 24);
+      }
+    }
+  }
+  return { bitrate: Math.round(bitrate), scale, fps, degradationPreference };
+}
+async function applySenderTuning(pc, peerId) {
+  const profile = targetSenderProfile(peerId);
   for (const sender of pc.getSenders()) {
-    if (sender.track?.kind !== 'video') continue;
+    if (!sender.track) continue;
     try {
       const params = sender.getParameters();
-      if (!params.encodings?.length) params.encodings = [{}];
-      params.encodings[0].maxBitrate = cfg.bitrate;
+      params.encodings ??= [{}];
+      if (sender.track.kind === 'video') {
+        params.encodings[0].maxBitrate = profile.bitrate;
+        params.encodings[0].maxFramerate = profile.fps;
+        params.encodings[0].scaleResolutionDownBy = Math.max(1, profile.scale);
+        params.encodings[0].priority = 'high';
+        params.degradationPreference = profile.degradationPreference;
+      } else if (sender.track.kind === 'audio') {
+        // Áudio do jogo/janela é pequeno comparado ao vídeo; limite fixo ajuda a sobrar banda.
+        params.encodings[0].maxBitrate = 128000;
+        params.encodings[0].priority = 'high';
+      }
       await sender.setParameters(params);
-    } catch {}
+    } catch (error) {
+      // Fallback: alguns navegadores rejeitam scale/priority, mas aceitam bitrate/fps.
+      try {
+        const basic = sender.getParameters();
+        basic.encodings ??= [{}];
+        if (sender.track.kind === 'video') {
+          basic.encodings[0].maxBitrate = profile.bitrate;
+          basic.encodings[0].maxFramerate = profile.fps;
+          basic.degradationPreference = profile.degradationPreference;
+        } else if (sender.track.kind === 'audio') {
+          basic.encodings[0].maxBitrate = 128000;
+        }
+        await sender.setParameters(basic);
+      } catch {
+        console.debug('Ajuste RTP indisponível neste navegador.', error?.name || error);
+      }
+    }
   }
+}
+async function collectPeerHealth(peerId, pc) {
+  try {
+    const stats = await pc.getStats();
+    let availableBitrate = NaN;
+    let rtt = 0;
+    let loss = 0;
+    let bandwidthLimited = false;
+    stats.forEach(report => {
+      if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
+        if (Number.isFinite(report.availableOutgoingBitrate)) availableBitrate = report.availableOutgoingBitrate;
+        if (Number.isFinite(report.currentRoundTripTime)) rtt = Math.max(rtt, report.currentRoundTripTime);
+      }
+      if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
+        if (Number.isFinite(report.roundTripTime)) rtt = Math.max(rtt, report.roundTripTime);
+        if (Number.isFinite(report.fractionLost)) loss = Math.max(loss, report.fractionLost);
+      }
+      if (report.type === 'outbound-rtp' && report.kind === 'video' && report.qualityLimitationReason === 'bandwidth') bandwidthLimited = true;
+    });
+    peerHealth.set(peerId, { availableBitrate, rtt, loss, bandwidthLimited, at: Date.now() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function adaptiveTick() {
+  if (!isOwner || !localStream || selectedQuality !== 'auto') return;
+  const activePeers = [...peers.entries()].filter(([, pc]) => !['closed', 'failed'].includes(pc.connectionState));
+  await Promise.all(activePeers.map(async ([peerId, pc]) => {
+    await collectPeerHealth(peerId, pc);
+    await applySenderTuning(pc, peerId);
+  }));
+}
+function startAdaptiveMonitor() {
+  if (adaptiveTimer || !isOwner || !localStream || selectedQuality !== 'auto') return;
+  adaptiveTimer = setInterval(adaptiveTick, ADAPTIVE_INTERVAL_MS);
+  setTimeout(adaptiveTick, 800);
+}
+function stopAdaptiveMonitor() {
+  if (adaptiveTimer) clearInterval(adaptiveTimer);
+  adaptiveTimer = null;
+  peerHealth.clear();
 }
 async function applyQualityToLocalTrack() {
   if (!localStream) return;
@@ -411,6 +754,7 @@ async function applyQualityToLocalTrack() {
   const track = localStream.getVideoTracks()[0];
   if (track) {
     try {
+      track.contentHint = cfg.fps >= 50 ? 'motion' : 'detail';
       await track.applyConstraints({
         width: { ideal: cfg.width },
         height: { ideal: cfg.height },
@@ -418,24 +762,29 @@ async function applyQualityToLocalTrack() {
       });
     } catch (err) { console.warn('Qualidade limitada pelo navegador/tela', err); }
   }
-  if (isOwner) for (const pc of peers.values()) await applySenderBitrate(pc);
+  if (isOwner) for (const [peerId, pc] of peers) await applySenderTuning(pc, peerId);
+  if (selectedQuality === 'auto') startAdaptiveMonitor(); else stopAdaptiveMonitor();
   const self = members.get(clientId);
   if (self) { self.quality = cfg.label; syncStreamTiles(); }
   if (isOwner) socket.emit('room:stream', { active: true, quality: cfg.label, audio: localStream.getAudioTracks().length > 0 });
 }
-async function makeHostPeer(viewerId) {
-  if (!isOwner || !localStream || !viewerId || viewerId === socket.id) return;
+async function makeHostPeer(viewerId, forceRestart = false) {
+  if (!isOwner || !localStream || !viewerId || viewerId === socket.id || peerBuilds.has(viewerId)) return;
+  peerBuilds.add(viewerId);
   knownViewers.add(viewerId);
-  const pc = makePeer(viewerId, 'host');
-  for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
   try {
-    const offer = await pc.createOffer();
+    const pc = makePeer(viewerId, 'host');
+    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+    const offer = await pc.createOffer(forceRestart ? { iceRestart: true } : undefined);
     await pc.setLocalDescription(offer);
-    await applySenderBitrate(pc);
+    await applySenderTuning(pc, viewerId);
     socket.emit('webrtc:offer', { target: viewerId, sdp: pc.localDescription });
   } catch (error) {
     console.error('Falha ao criar oferta', error);
     closePeer(viewerId);
+    schedulePeerRecovery(viewerId, 'host', false);
+  } finally {
+    peerBuilds.delete(viewerId);
   }
 }
 function ensureHostPeers() {
@@ -445,6 +794,7 @@ function ensureHostPeers() {
     knownViewers.add(member.socketId);
     if (!peers.has(member.socketId)) makeHostPeer(member.socketId);
   }
+  startAdaptiveMonitor();
 }
 function ownerInRoom() {
   return [...members.values()].find(m => m.owner) || null;
@@ -474,17 +824,40 @@ async function startSharing() {
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não suporta compartilhamento de tela.');
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
   try {
-    // Mantém o motor V3, mas preserva a proteção contra retorno solicitada.
-    // Nunca pedimos microfone/câmera. A prévia local fica muda e o Chrome é orientado a não capturar o áudio geral do sistema.
+    // Sem microfone/câmera. systemAudio=exclude evita oferecer o áudio geral do Windows.
+    // restrictOwnAudio, quando suportado, tenta retirar o áudio produzido por esta própria aba da captura.
+    const supported = navigator.mediaDevices.getSupportedConstraints?.() || {};
+    const audioConstraints = {};
+    if (supported.restrictOwnAudio) audioConstraints.restrictOwnAudio = true;
     const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: cfg.fps, max: cfg.fps } },
-      audio: true,
+      video: {
+        width: { ideal: cfg.width },
+        height: { ideal: cfg.height },
+        frameRate: { ideal: cfg.fps, max: cfg.fps }
+      },
+      audio: audioConstraints,
       selfBrowserSurface: 'exclude',
       surfaceSwitching: 'include',
       systemAudio: 'exclude',
       windowAudio: 'window',
       preferCurrentTab: false
     });
+    const videoTrack = stream.getVideoTracks()[0];
+    const displaySurface = videoTrack?.getSettings?.().displaySurface || '';
+    if (videoTrack) videoTrack.contentHint = cfg.fps >= 50 ? 'motion' : 'detail';
+    for (const audioTrack of stream.getAudioTracks()) {
+      try { audioTrack.contentHint = 'music'; } catch {}
+    }
+
+    if (displaySurface === 'monitor' && stream.getAudioTracks().length) {
+      // Tela inteira pode incluir Discord/Windows em alguns navegadores/SO. Para garantir
+      // o modo sem retorno, toda faixa de áudio é descartada nessa modalidade.
+      for (const track of [...stream.getAudioTracks()]) {
+        try { stream.removeTrack(track); track.stop(); } catch {}
+      }
+      toast('Tela inteira: áudio removido para impedir retorno. Para transmitir som, compartilhe uma janela ou aba.', 5200);
+    }
+
     localStream = stream;
     const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar, owner: true };
     self.streaming = true;
@@ -498,9 +871,11 @@ async function startSharing() {
     socket.emit('room:stream', { active: true, quality: cfg.label, audio: self.audio });
     for (const viewerId of knownViewers) makeHostPeer(viewerId);
     ensureHostPeers();
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
-    toast(self.audio ? 'Transmissão iniciada com áudio da janela/aba escolhida.' : 'Transmissão iniciada sem áudio.');
+    if (videoTrack) {
+      videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
+      videoTrack.addEventListener('mute', () => { if (localStream) toast('A captura foi pausada pelo sistema.'); });
+    }
+    toast(self.audio ? 'Transmissão iniciada com áudio isolado da janela/aba.' : 'Transmissão iniciada sem áudio.');
   } catch (err) {
     if (!['NotAllowedError', 'AbortError'].includes(err?.name)) {
       console.error(err);
@@ -511,6 +886,7 @@ async function startSharing() {
 }
 function stopSharing(notify = true) {
   if (!localStream) return;
+  stopAdaptiveMonitor();
   localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
   localStream = null;
   closeAllPeers();
@@ -546,6 +922,7 @@ socket.on('host:stream', ({ active, quality, audio }) => {
     if (viewerHostId) closePeer(viewerHostId);
     viewerHostId = null;
     remoteStreams.clear();
+    disposeAllAudioPipelines();
   }
   syncStreamTiles();
   renderMixer();
@@ -557,8 +934,14 @@ socket.on('host:restored', ({ hostId }) => {
   if (isOwner) return;
   closeAllPeers();
   remoteStreams.clear();
+  disposeAllAudioPipelines();
   viewerHostId = hostId || null;
   syncStreamTiles();
+});
+socket.on('webrtc:restart-request', ({ from }) => {
+  if (!isOwner || !localStream || !from) return;
+  knownViewers.add(from);
+  makeHostPeer(from, true);
 });
 socket.on('webrtc:offer', async ({ from, sdp }) => {
   if (isOwner || !from || !sdp) return;
@@ -573,6 +956,7 @@ socket.on('webrtc:offer', async ({ from, sdp }) => {
   } catch (error) {
     console.error('Falha ao responder oferta', error);
     closePeer(from);
+    schedulePeerRecovery(from, 'viewer', false);
   }
 });
 socket.on('webrtc:answer', async ({ from, sdp }) => {
@@ -580,7 +964,10 @@ socket.on('webrtc:answer', async ({ from, sdp }) => {
   const pc = peers.get(from);
   if (!pc) return;
   try { await pc.setRemoteDescription(sdp); await flushIce(from, pc); }
-  catch (error) { console.error('Falha ao aplicar resposta', error); }
+  catch (error) {
+    console.error('Falha ao aplicar resposta', error);
+    schedulePeerRecovery(from, 'host', false);
+  }
 });
 socket.on('webrtc:ice', async ({ from, candidate }) => {
   if (!from || !candidate) return;
@@ -638,9 +1025,15 @@ function ensureTile(member) {
       tile.insertBefore(video, tile.firstChild);
     }
     if (video.srcObject !== stream) video.srcObject = stream;
-    video.muted = member.clientId === clientId;
-    if (member.clientId === clientId) { video.volume = 0; video.setAttribute('aria-label', 'Sua transmissão local muda'); }
-    else applyVolumeFor(member.clientId, video);
+    if (member.clientId === clientId) {
+      video.muted = true;
+      video.volume = 0;
+      video.setAttribute('aria-label', 'Sua transmissão local muda');
+    } else {
+      const pipe = ensureRemoteAudioPipeline(member.clientId, stream);
+      video.muted = Boolean(pipe);
+      applyVolumeFor(member.clientId, video);
+    }
     waiting?.classList.add('hidden');
   } else {
     if (video) { video.srcObject = null; video.remove(); }
@@ -680,10 +1073,19 @@ function applyVolumeFor(id, video = null) {
   if (id === clientId) return;
   const state = mixState(id);
   const target = video || document.querySelector(`.stream-tile[data-client-id="${CSS.escape(id)}"] video`);
+  const soloBlocks = Boolean(soloClientId && soloClientId !== id);
+  const blocked = Boolean(state.muted || soloBlocks);
+  const maxGain = audioBoostEnabled ? 2 : 1;
+  const effective = blocked ? 0 : Math.max(0, Math.min(maxGain, masterVolume * state.volume));
+  const pipe = audioPipelines.get(id);
+  if (pipe) {
+    try { pipe.gain.gain.setTargetAtTime(effective, pipe.gain.context.currentTime, 0.015); } catch { pipe.gain.gain.value = effective; }
+    if (target) target.muted = true;
+    return;
+  }
   if (!target) return;
-  const soloBlocks = soloClientId && soloClientId !== id;
-  target.muted = Boolean(state.muted || soloBlocks);
-  target.volume = Math.max(0, Math.min(1, masterVolume * state.volume));
+  target.muted = blocked;
+  target.volume = Math.max(0, Math.min(1, effective));
 }
 function applyAllVolumes() {
   for (const member of getStreamingMembers()) if (member.clientId !== clientId) applyVolumeFor(member.clientId);
@@ -703,7 +1105,7 @@ function renderMixer() {
     channel.className = 'mixer-channel';
     channel.innerHTML = `
       <div class="mixer-channel-head">${member.avatar ? `<img src="${member.avatar}" alt="" />` : `<div class="mix-fallback">${escapeHtml(initials(member.name))}</div>`}<b>${escapeHtml(member.name)}</b><span>${local ? 'LOCAL' : Math.round(state.volume*100)+'%'}</span></div>
-      <input class="channel-volume" type="range" min="0" max="100" value="${Math.round(state.volume*100)}" ${local ? 'disabled' : ''} />
+      <input class="channel-volume" type="range" min="0" max="${audioBoostEnabled ? 150 : 100}" value="${Math.round(state.volume*100)}" ${local ? 'disabled' : ''} />
       <div class="mixer-channel-actions"><button class="mix-toggle mute ${state.muted?'active':''}" ${local?'disabled':''}>M</button><button class="mix-toggle solo ${soloClientId===member.clientId?'active':''}" ${local?'disabled':''}>S</button></div>`;
     if (!local) {
       channel.querySelector('.channel-volume').addEventListener('input', e => {
@@ -745,7 +1147,7 @@ function sendChat() {
 
 /* Avatar ajustável */
 function openAvatarEditor() {
-  avatarSource = currentAvatar || '/linozera-logo.png';
+  avatarSource = currentAvatar || '/default-avatar.png';
   avatarX = 0; avatarY = 0; avatarZoom = 1;
   $('avatarEditorImg').src = avatarSource;
   $('avatarZoom').value = '100';
@@ -791,6 +1193,7 @@ async function checkForUpdate() {
 setInterval(checkForUpdate, 60000);
 
 /* Eventos socket */
+socket.on('public-rooms:changed', () => { if (!currentRoom) loadPublicRooms(false); });
 socket.on('room:status', data => { if (currentRoom && normalizeRoom(data.roomId) === currentRoom) applyRoomStatus(data); });
 socket.on('member:joined', () => { playUISound('join'); socket.emit('room:status'); });
 socket.on('member:left', ({ clientId: leftId }) => {
@@ -874,7 +1277,7 @@ $('fullscreenBtn').addEventListener('click', async () => {
 
 $('mixerBtn').addEventListener('click', () => { renderMixer(); $('mixerPanel').classList.toggle('hidden'); });
 $('closeMixerBtn').addEventListener('click', () => $('mixerPanel').classList.add('hidden'));
-$('masterVolume').addEventListener('input', e => { masterVolume = Number(e.target.value)/100; $('masterVolumeLabel').textContent = `${e.target.value}%`; applyAllVolumes(); });
+$('masterVolume').addEventListener('input', e => { masterVolume = Number(e.target.value)/100; localStorage.setItem('lnz_master_volume', e.target.value); $('masterVolumeLabel').textContent = `${e.target.value}%`; applyAllVolumes(); syncSettingsUI(); });
 $('chatToggleBtn').addEventListener('click', () => $('chatPanel').classList.toggle('closed'));
 $('closeChatBtn').addEventListener('click', () => $('chatPanel').classList.add('closed'));
 $('sendChatBtn').addEventListener('click', sendChat);
@@ -901,12 +1304,56 @@ $$('[data-move]').forEach(btn => btn.addEventListener('click', () => {
 $('avatarZoom').addEventListener('input', e => { avatarZoom = Number(e.target.value)/100; updateAvatarEditorPreview(); });
 $('saveAvatarBtn').addEventListener('click', saveAvatar);
 
-$('settingsBtn').addEventListener('click', () => showModal('settingsModal'));
-$('soundToggle').checked = soundEnabled;
-$('soundVolume').value = String(Math.round(soundVolume*100));
-$('soundVolumeLabel').textContent = `${Math.round(soundVolume*100)}%`;
-$('soundToggle').addEventListener('change', e => { soundEnabled=e.target.checked; localStorage.setItem('lnz_sounds', soundEnabled?'1':'0'); if (soundEnabled) playUISound('tap'); });
-$('soundVolume').addEventListener('input', e => { soundVolume=Number(e.target.value)/100; localStorage.setItem('lnz_sound_volume', e.target.value); $('soundVolumeLabel').textContent=`${e.target.value}%`; });
+$('settingsBtn').addEventListener('click', () => openSettings('general'));
+$('homeSettingsBtn').addEventListener('click', () => openSettings('general'));
+$$('.settings-tab').forEach(btn => btn.addEventListener('click', () => selectSettingsTab(btn.dataset.settingsTab)));
+
+$('soundToggle').addEventListener('change', e => {
+  soundEnabled = e.target.checked;
+  localStorage.setItem('lnz_sounds', soundEnabled ? '1' : '0');
+  if (soundEnabled) playUISound('tap');
+  syncSettingsUI();
+});
+$('soundVolume').addEventListener('input', e => {
+  soundVolume = Number(e.target.value) / 100;
+  localStorage.setItem('lnz_sound_volume', e.target.value);
+  syncSettingsUI();
+});
+$('autoChatToggle').addEventListener('change', e => {
+  autoChatOpen = e.target.checked;
+  localStorage.setItem('lnz_auto_chat', autoChatOpen ? '1' : '0');
+  if (currentRoom) $('chatPanel').classList.toggle('closed', !autoChatOpen);
+  syncSettingsUI();
+});
+$('defaultMasterVolume').addEventListener('input', e => {
+  masterVolume = Number(e.target.value) / 100;
+  localStorage.setItem('lnz_master_volume', e.target.value);
+  applyAllVolumes();
+  syncSettingsUI();
+});
+$('audioBoostToggle').addEventListener('change', e => {
+  audioBoostEnabled = e.target.checked;
+  localStorage.setItem('lnz_audio_boost', audioBoostEnabled ? '1' : '0');
+  if (!audioBoostEnabled && masterVolume > 1) masterVolume = 1;
+  renderMixer();
+  applyAllVolumes();
+  syncSettingsUI();
+});
+$('defaultQualitySelect').addEventListener('change', e => {
+  if (!QUALITY[e.target.value]) return;
+  selectedQuality = e.target.value;
+  localStorage.setItem('lnz_quality', selectedQuality);
+  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
+  $$('[data-quality]').forEach(b => b.classList.toggle('selected', b.dataset.quality === selectedQuality));
+  syncSettingsUI();
+});
+$('roomPublicToggleSettings').addEventListener('change', e => setRoomVisibility(e.target.checked));
+$('roomLockToggleSettings').addEventListener('change', e => setRoomLock(e.target.checked));
+$('settingsRefreshRoomBtn').addEventListener('click', () => refreshRoomStatus(true));
+$('settingsCopyInviteBtn').addEventListener('click', () => currentRoom && copyText(roomInviteUrl(), 'Link do convite copiado.'));
+$('settingsCloseRoomBtn').addEventListener('click', closeRoom);
+$('settingsDoneBtn').addEventListener('click', () => hideModal('settingsModal'));
+$('refreshRoomBtn').addEventListener('click', () => refreshRoomStatus(true));
 
 $$('[data-close]').forEach(btn => btn.addEventListener('click', () => hideModal(btn.dataset.close)));
 $$('.modal-backdrop').forEach(backdrop => backdrop.addEventListener('click', e => { if (e.target === backdrop) hideModal(backdrop.id); }));
@@ -920,5 +1367,6 @@ window.addEventListener('beforeunload', () => {
 
 const initialRoom = normalizeRoom(new URLSearchParams(location.search).get('room'));
 if (initialRoom) $('roomInput').value = formatRoom(initialRoom);
+syncSettingsUI();
 loadPublicRooms(); checkForUpdate();
 setInterval(loadPublicRooms, 15000);

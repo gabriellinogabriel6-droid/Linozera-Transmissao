@@ -1,15 +1,17 @@
 {
   "name": "linozera-transmissao-v4",
-  "version": "4.2.0",
+  "version": "4.6.0",
   "private": true,
-  "description": "Linozera Transmissão V4.2: visual premium atual com motor de transmissão estável da V3, chat, mix de som, avatar e salas trancáveis.",
+  "description": "Linozera Transmissão V4.6: visual fiel ao mockup aprovado com motor estável V3, configurações, chat, mix, avatar e salas.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
     "check": "node --check server.js && node --check public/app.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^5.1.0",
     "socket.io": "^4.8.1"
