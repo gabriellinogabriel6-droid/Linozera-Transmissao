@@ -17,10 +17,11 @@
         <span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span>
       </a>
       <nav>
-        <a href="#features">Recursos</a>
+        <a href="#features">Recursos⌄</a>
         <a href="#publicRooms">Salas públicas</a>
-        <a href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
-        <button id="navEnterBtn" class="nav-enter">Entrar</button>
+        <a href="#support">Suporte⌄</a>
+        <a class="discord-link" href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
+        <button id="navEnterBtn" class="nav-enter">▣ &nbsp; Entrar</button>
       </nav>
     </header>
 
@@ -36,13 +37,14 @@
           </div>
           <div class="benefit-row">
             <div><i>◌</i><span><b>Sem instalação</b><small>Tudo no navegador</small></span></div>
-            <div><i>◇</i><span><b>Sem retorno local</b><small>Microfone bloqueado</small></span></div>
-            <div><i>⚡</i><span><b>Baixa latência</b><small>WebRTC ponto a ponto</small></span></div>
+            <div><i>◇</i><span><b>Rápido e seguro</b><small>Conexão protegida</small></span></div>
+            <div><i>⚡</i><span><b>Qualidade máxima</b><small>Baixa latência</small></span></div>
           </div>
         </div>
 
         <div class="hero-brand" aria-hidden="true">
-          <img src="/linozera-banner.png" alt="" />
+          <div class="hero-logo-wrap"><img src="/linozera-logo.png" alt="" /></div>
+          <div class="hero-wordmark">LINOZERA<small>TRANSMISSÃO V4</small></div>
           <div class="hero-smoke"></div>
         </div>
 
@@ -76,7 +78,7 @@
 
       <section id="publicRooms" class="home-section">
         <div class="section-head">
-          <div><small>◉ &nbsp; AO VIVO</small><h2>Salas públicas</h2></div>
+          <div><small>◉ &nbsp; SALAS PÚBLICAS AO VIVO</small><h2>Descubra transmissões</h2></div>
           <button id="refreshRoomsBtn" class="text-btn">Atualizar ↻</button>
         </div>
         <div id="publicRoomsGrid" class="public-grid">
@@ -84,7 +86,7 @@
         </div>
       </section>
 
-      <section id="features" class="home-section">
+      <section id="features" class="home-section features-section">
         <div class="section-head"><div><small>RECURSOS PRINCIPAIS</small><h2>Feito para compartilhar tela</h2></div></div>
         <div class="feature-grid">
           <article><i>▦</i><div><h3>Múltiplas transmissões</h3><p>Várias pessoas podem apresentar a tela ao mesmo tempo.</p></div></article>
@@ -95,10 +97,14 @@
       </section>
     </main>
 
-    <footer class="home-footer shell">
-      <div class="brand mini"><img src="/linozera-logo.png" alt="" /><span><b>LINOZERA</b><small>Conecte. Compartilhe. Transmita.</small></span></div>
-      <div>Seguro e privado &nbsp; • &nbsp; Sem câmera &nbsp; • &nbsp; Sem microfone</div>
-      <div>V4</div>
+    <footer id="support" class="home-footer shell">
+      <div class="brand mini"><img src="/linozera-logo.png" alt="" /><span><b>LINOZERA</b><small>Feito para transmissões rápidas, sem instalação.</small></span></div>
+      <div class="footer-points">
+        <span><b>◇ Seguro e privado</b><small>Seus dados protegidos</small></span>
+        <span><b>⚡ Desempenho otimizado</b><small>Servidor de baixa latência</small></span>
+        <span><b>♙ Comunidade ativa</b><small>Converse no Discord</small></span>
+      </div>
+      <div class="footer-version">V4.1</div>
     </footer>
   </section>
 
@@ -137,7 +143,15 @@
               <img id="roomAvatarImg" src="/linozera-logo.png" alt="" />
               <div><b id="myNameLabel">Linozera</b><small>Você</small></div>
             </div>
-            <button id="editAvatarBtn2" class="btn ghost full small">Editar meu avatar</button>
+            <button id="editAvatarBtn2" class="btn ghost full small">Editar meu avatar &nbsp; ⚙</button>
+            <div class="avatar-mini-editor" aria-hidden="true">
+              <div class="mini-tabs"><span>AVATAR</span><b>POSICIONAMENTO</b></div>
+              <div class="mini-position">
+                <div class="mini-avatar-ring"><img src="/linozera-logo.png" alt="" /></div>
+                <div class="mini-pad"><i></i><button tabindex="-1">↑</button><i></i><button tabindex="-1">←</button><button tabindex="-1">•</button><button tabindex="-1">→</button><i></i><button tabindex="-1">↓</button><i></i></div>
+              </div>
+              <div class="mini-zoom"><span>ZOOM</span><div><i>−</i><b></b><i>100%</i></div></div>
+            </div>
           </div>
         </div>
       </aside>
@@ -160,7 +174,7 @@
           </div>
         </div>
 
-        <section id="mixerPanel" class="mixer-panel hidden">
+        <section id="mixerPanel" class="mixer-panel">
           <div class="mixer-head"><div><small>≋ &nbsp; MIX DE SOM</small><span>Controle somente o que você ouve</span></div><button id="closeMixerBtn" class="icon-btn">×</button></div>
           <div class="master-channel">
             <label><span>VOLUME MASTER</span><b id="masterVolumeLabel">100%</b></label>
@@ -171,7 +185,7 @@
         </section>
 
         <div class="bottom-dock">
-          <button id="shareBtn" class="dock-primary">▣ &nbsp; <span id="shareBtnLabel">Apresentar agora</span></button>
+          <button id="shareBtn" class="dock-primary">▣ &nbsp; <span id="shareBtnLabel">Compartilhar tela</span></button>
           <button id="qualityBtn" class="dock-btn">◈ &nbsp; <span id="qualityDockLabel">Automático</span></button>
           <button id="mixerBtn" class="dock-btn">≋ &nbsp; Mix de som</button>
           <button id="chatToggleBtn" class="dock-btn">▢ &nbsp; Chat</button>

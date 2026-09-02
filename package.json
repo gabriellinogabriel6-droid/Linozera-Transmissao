@@ -1,6 +1,6 @@
 {
   "name": "linozera-transmissao-v4",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "private": true,
   "description": "Linozera Transmissão V4: múltiplos compartilhamentos de tela WebRTC, chat, mix de som, avatar e salas trancáveis.",
   "main": "server.js",

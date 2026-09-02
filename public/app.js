@@ -1,4 +1,4 @@
-const BUILD_VERSION = '4.0.0';
+const BUILD_VERSION = '4.1.0';
 const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
 const socket = io({ transports: ['websocket', 'polling'] });
 const $ = id => document.getElementById(id);
@@ -472,7 +472,7 @@ function stopSharing(notify = true) {
   closeAllSessions('send');
   const self = members.get(clientId);
   if (self) { self.streaming = false; self.audio = false; }
-  $('shareBtnLabel').textContent = 'Apresentar agora';
+  $('shareBtnLabel').textContent = 'Compartilhar tela';
   $('shareBtn').classList.remove('stop');
   if (socket.connected && currentRoom) socket.emit('room:stream', { active: false, quality: QUALITY[selectedQuality].label, audio: false });
   syncStreamTiles();

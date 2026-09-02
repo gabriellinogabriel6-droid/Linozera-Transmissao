@@ -15,7 +15,7 @@ const io = new Server(server, {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const APP_VERSION = '4.0.0';
+const APP_VERSION = '4.1.0';
 const EMPTY_ROOM_TTL_MS = 120000;
 const MAX_CHAT = 100;
 const rooms = new Map();

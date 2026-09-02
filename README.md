@@ -1,4 +1,6 @@
-# Linozera Transmissão V4
+# Linozera Transmissão V4.1
+
+Visual revisado para ficar fiel aos mockups aprovados do lobby e da sala.
 
 Versão focada em compartilhamento de tela no estilo Meet, mas sem câmera e sem solicitar microfone.
 
