@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#061719" />
+  <meta name="description" content="Linozera Transmissão — compartilhe sua tela ao vivo, direto pelo navegador." />
+  <title>Linozera — Transmissão</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <section id="home" class="landing">
+    <div class="landing-art" aria-hidden="true"></div>
+    <div class="dot-field dots-left" aria-hidden="true"></div>
+    <div class="dot-field dots-right" aria-hidden="true"></div>
+
+    <div class="landing-wrap">
+      <div class="hero-panel">
+        <div class="brand-line">
+          <img src="/linozera-logo.png" alt="" class="brand-mark" />
+          <strong>LINOZERA</strong>
+          <span></span>
+          <small>ponto a ponto</small>
+        </div>
+
+        <h1>Sua tela, ao vivo,<br />direto para a sala.</h1>
+        <p class="hero-text">Crie uma sala em um clique, compartilhe o código e transmita a tela pelo navegador. Sem instalar nada e sem reproduzir sua própria transmissão.</p>
+
+        <div class="features">
+          <div><b>⚡</b><span>Sala instantânea, entre por código ou link</span></div>
+          <div><b>◇</b><span>Vídeo direto entre os navegadores via WebRTC</span></div>
+          <div><b>♙</b><span>Compartilhamento simples e sem capturar microfone</span></div>
+        </div>
+
+        <div class="hero-pills">
+          <span>◎ Sem instalação</span>
+          <span>◈ Sem retorno local</span>
+        </div>
+      </div>
+
+      <div class="entry-card">
+        <div class="entry-head">
+          <h2>Entrar</h2>
+          <p>Escolha um nickname para ser identificado na sala.</p>
+        </div>
+
+        <label class="field-label" for="nicknameInput">
+          <span>NICKNAME</span><small id="nickCount">0/24</small>
+        </label>
+        <div class="nickname-row">
+          <img src="/linozera-logo.png" alt="Linozera" class="mini-avatar" />
+          <input id="nicknameInput" maxlength="24" autocomplete="nickname" spellcheck="false" placeholder="Seu nickname" />
+        </div>
+        <div id="homeError" class="form-error"></div>
+
+        <button id="createBtn" class="main-btn">＋ &nbsp; Criar sala</button>
+
+        <div class="divider"><span></span><b>OU</b><span></span></div>
+
+        <label class="field-label" for="roomInput"><span>CÓDIGO DA SALA</span></label>
+        <div class="join-row">
+          <input id="roomInput" maxlength="9" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX" />
+          <button id="joinBtn" class="join-btn">Entrar&nbsp; →</button>
+        </div>
+      </div>
+    </div>
+
+    <footer class="landing-footer">Feito para <strong>Linozera</strong> · transmissão ponto a ponto</footer>
+  </section>
+
+  <section id="roomView" class="room-view hidden">
+    <header class="room-topbar">
+      <div class="room-brand">
+        <img src="/linozera-logo.png" alt="" />
+        <strong>Linozera</strong>
+        <i></i>
+        <button id="topRoomCode" class="code-chip" title="Copiar código">XXXX-XXXX</button>
+      </div>
+      <div class="room-actions">
+        <button id="lockBtn" class="top-btn host-only">▣ &nbsp;Trancar</button>
+        <div class="people-chip">♧ <b id="topPeopleCount">1</b></div>
+        <div id="connection" class="connection"><i></i><span>Conectado</span></div>
+      </div>
+    </header>
+
+    <div class="room-layout">
+      <aside class="sidebar">
+        <div class="room-card">
+          <small>CÓDIGO DA SALA</small>
+          <div class="room-code-line"><strong id="sideRoomCode">XXXX-XXXX</strong><button id="copyCodeBtn" title="Copiar código">▢</button></div>
+          <button id="copyLinkBtn" class="outline-btn">↗ &nbsp; Copiar link do convite</button>
+        </div>
+
+        <div class="members-block">
+          <div class="section-label">NA SALA — <span id="memberCount">1</span></div>
+          <div id="memberList" class="member-list"></div>
+        </div>
+
+        <div class="sidebar-spacer"></div>
+
+        <div class="sidebar-bottom">
+          <button id="sidebarShareBtn" class="side-share host-only">⇩ &nbsp; Compartilhar tela</button>
+          <div class="activity-row">
+            <img src="/linozera-logo.png" alt="" />
+            <span>Você entrou como <b id="activityName">—</b></span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="stage">
+        <video id="hostVideo" class="stream-video hidden" autoplay playsinline muted></video>
+        <video id="viewerVideo" class="stream-video hidden" autoplay playsinline controls></video>
+
+        <div id="emptyState" class="empty-state">
+          <div class="screen-icon">▱</div>
+          <h2 id="emptyTitle">Ninguém está compartilhando ainda</h2>
+          <p id="emptyText">Chame alguém com o link da sala ou comece transmitindo a sua tela.</p>
+          <div class="empty-actions host-only">
+            <button id="emptyShareBtn" class="main-btn compact">▣ &nbsp; Compartilhar tela</button>
+            <button id="emptyCopyBtn" class="outline-btn compact">↗ &nbsp; Copiar link</button>
+          </div>
+        </div>
+
+        <div id="hostReconnect" class="stage-overlay hidden">Reconectando ao servidor…</div>
+        <div id="viewerReconnect" class="stage-overlay hidden">O transmissor está reconectando…</div>
+
+        <div class="bottom-dock">
+          <button id="dockShareBtn" class="dock-primary host-only">▣ &nbsp; <span id="shareLabel">Compartilhar tela</span></button>
+          <span class="dock-sep host-only"></span>
+          <button id="fullscreenBtn" class="dock-icon" title="Tela cheia">⛶</button>
+          <span class="dock-sep"></span>
+          <button id="leaveBtn" class="dock-icon" title="Sair da sala">↪</button>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
