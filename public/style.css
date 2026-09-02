@@ -76,3 +76,6 @@ button,.btn,.icon-btn,.nav-enter,.room-code-chip,.discord-chip,.text-btn{border:
 .mixer-channels{grid-template-columns:repeat(4,minmax(130px,1fr))}.bottom-dock{bottom:12px;border-radius:18px;padding:7px 9px;background:rgba(13,8,21,.96)}
 .chat-head{height:62px}.chat-messages{padding:12px}.chat-message{padding:10px;border-color:#2a173e;background:#0d0815}.chat-compose{padding:11px}.send-btn{background:linear-gradient(135deg,#953eff,#6c27dc);box-shadow:0 0 22px rgba(130,50,235,.22)}
 @media(max-width:1180px){.avatar-mini-editor{display:none}.footer-points{display:none}}
+
+/* V4.2: espectadores mantêm o layout atual, mas o compartilhamento segue o motor V3 (dono transmite). */
+button.disabled, button:disabled { opacity:.48; cursor:not-allowed; filter:saturate(.55); }

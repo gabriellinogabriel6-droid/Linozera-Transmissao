@@ -1,4 +1,4 @@
-const BUILD_VERSION = '4.1.0';
+const BUILD_VERSION = '4.2.0';
 const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
 const socket = io({ transports: ['websocket', 'polling'] });
 const $ = id => document.getElementById(id);
@@ -32,7 +32,10 @@ let layoutMode = 'grid';
 let focusedClientId = null;
 let reconnecting = false;
 
-const sessions = new Map();
+const peers = new Map();
+const pendingIce = new Map();
+const knownViewers = new Set();
+let viewerHostId = null;
 const remoteStreams = new Map();
 const chatIds = new Set();
 const channelMix = new Map();
@@ -244,8 +247,10 @@ function enterRoomFromAck(result) {
   $('sideRoomCode').textContent = formatted;
   showRoom();
   applyRoomStatus(result.status || {});
+  if (!isOwner) viewerHostId = result.hostId || viewerHostId;
+  if (isOwner) knownViewers.clear();
   playUISound('join');
-  if (localStream) {
+  if (localStream && isOwner) {
     const q = QUALITY[selectedQuality] || QUALITY.auto;
     socket.emit('room:stream', { active: true, quality: q.label, audio: localStream.getAudioTracks().length > 0 });
   }
@@ -265,8 +270,8 @@ function applyRoomStatus(data) {
   syncStreamTiles();
   renderMixer();
   if (Array.isArray(data.chat)) data.chat.forEach(appendChatMessage);
-  cleanupSessionsForMembers();
-  if (localStream) ensureAllSendPeers();
+  cleanupPeersForMembers();
+  if (localStream && isOwner) ensureHostPeers();
   if (oldLocked !== roomLocked && oldLocked !== undefined) playUISound(roomLocked ? 'lock' : 'unlock');
 }
 function renderRoomState() {
@@ -277,7 +282,10 @@ function renderRoomState() {
   $('lockStateChip').textContent = roomLocked ? '🔒 Sala trancada' : '◈ Sala aberta';
   $('roomPrivacyBadge').textContent = roomLocked ? '🔒 SALA TRANCADA' : (roomPublic ? '◉ SALA PÚBLICA' : '◈ SALA ABERTA');
   $('lockBtn').innerHTML = roomLocked ? '🔓 &nbsp; Destrancar sala' : '🔒 &nbsp; Trancar sala';
+  [$('shareBtn'), $('emptyShareBtn'), $('qualityBtn')].forEach(el => { if (el) { el.disabled = !isOwner; el.classList.toggle('disabled', !isOwner); } });
+  if (!localStream) $('shareBtnLabel').textContent = isOwner ? 'Compartilhar tela' : 'Somente assistir';
 }
+
 function avatarMarkup(member, cls = 'member-avatar') {
   const src = member.avatar;
   if (src) return `<div class="${cls}"><img src="${src}" alt="" /><i class="online-dot"></i></div>`;
@@ -324,7 +332,9 @@ function leaveRoom() {
   playUISound('leave');
 }
 function resetRoomState() {
-  closeAllSessions();
+  closeAllPeers();
+  knownViewers.clear();
+  viewerHostId = null;
   remoteStreams.clear();
   members.clear();
   chatIds.clear();
@@ -336,43 +346,52 @@ function resetRoomState() {
   syncStreamTiles();
 }
 
-/* WebRTC multi-stream */
-function newSessionId() {
-  return `${clientId}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+/* WebRTC estável da V3: um transmissor principal (dono) -> espectadores */
+function closePeer(peerId) {
+  const pc = peers.get(peerId);
+  if (pc) {
+    pc.onicecandidate = null;
+    pc.ontrack = null;
+    pc.onconnectionstatechange = null;
+    try { pc.close(); } catch {}
+  }
+  peers.delete(peerId);
+  pendingIce.delete(peerId);
 }
-function closeSession(sessionId) {
-  const s = sessions.get(sessionId);
-  if (!s) return;
-  try { s.pc.onicecandidate = null; s.pc.ontrack = null; s.pc.close(); } catch {}
-  sessions.delete(sessionId);
+function closeAllPeers() {
+  [...peers.keys()].forEach(closePeer);
 }
-function closeAllSessions(direction = null) {
-  for (const [id, s] of [...sessions]) if (!direction || s.direction === direction) closeSession(id);
+function cleanupPeersForMembers() {
+  const sockets = new Set([...members.values()].map(m => m.socketId).filter(Boolean));
+  for (const peerId of [...peers.keys()]) if (!sockets.has(peerId)) closePeer(peerId);
+  for (const viewerId of [...knownViewers]) if (!sockets.has(viewerId)) knownViewers.delete(viewerId);
 }
-function cleanupSessionsForMembers() {
-  const sockets = new Set([...members.values()].map(m => m.socketId));
-  for (const [id, s] of [...sessions]) if (!sockets.has(s.peerSocketId)) closeSession(id);
+function queueIce(peerId, candidate) {
+  const queue = pendingIce.get(peerId) || [];
+  queue.push(candidate);
+  pendingIce.set(peerId, queue);
 }
-function queueIce(session, candidate) {
-  session.pendingIce.push(candidate);
-}
-async function flushIce(session) {
-  const list = session.pendingIce.splice(0);
-  for (const candidate of list) {
-    try { await session.pc.addIceCandidate(candidate); } catch {}
+async function flushIce(peerId, pc) {
+  const queue = pendingIce.get(peerId) || [];
+  pendingIce.delete(peerId);
+  for (const candidate of queue) {
+    try { await pc.addIceCandidate(candidate); } catch (err) { console.warn('ICE ignorado', err); }
   }
 }
-function createPeerSession({ sessionId, direction, peerSocketId, peerClientId }) {
+function makePeer(peerId, mode) {
+  closePeer(peerId);
   const pc = new RTCPeerConnection(rtcConfig);
-  const session = { sessionId, direction, peerSocketId, peerClientId, pc, pendingIce: [] };
-  sessions.set(sessionId, session);
+  peers.set(peerId, pc);
   pc.onicecandidate = event => {
-    if (event.candidate) socket.emit('webrtc:ice', { target: peerSocketId, sessionId, candidate: event.candidate });
+    if (event.candidate) socket.emit('webrtc:ice', { target: peerId, candidate: event.candidate });
   };
   pc.onconnectionstatechange = () => {
-    if (['failed', 'closed'].includes(pc.connectionState)) closeSession(sessionId);
+    if (pc.connectionState === 'failed') {
+      if (mode === 'viewer') toast('A conexão direta falhou. Configure um TURN no Render para redes restritas.', 4500);
+      closePeer(peerId);
+    }
   };
-  return session;
+  return pc;
 }
 async function applySenderBitrate(pc) {
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
@@ -385,27 +404,6 @@ async function applySenderBitrate(pc) {
       await sender.setParameters(params);
     } catch {}
   }
-}
-async function makeSendPeer(member) {
-  if (!localStream || !member?.socketId || member.clientId === clientId) return;
-  const exists = [...sessions.values()].some(s => s.direction === 'send' && s.peerSocketId === member.socketId);
-  if (exists) return;
-  const sessionId = newSessionId();
-  const session = createPeerSession({ sessionId, direction: 'send', peerSocketId: member.socketId, peerClientId: member.clientId });
-  localStream.getTracks().forEach(track => session.pc.addTrack(track, localStream));
-  try {
-    const offer = await session.pc.createOffer();
-    await session.pc.setLocalDescription(offer);
-    await applySenderBitrate(session.pc);
-    socket.emit('webrtc:offer', { target: member.socketId, sessionId, sdp: session.pc.localDescription });
-  } catch (err) {
-    console.error('Falha ao criar oferta', err);
-    closeSession(sessionId);
-  }
-}
-function ensureAllSendPeers() {
-  if (!localStream) return;
-  for (const member of members.values()) makeSendPeer(member);
 }
 async function applyQualityToLocalTrack() {
   if (!localStream) return;
@@ -420,21 +418,64 @@ async function applyQualityToLocalTrack() {
       });
     } catch (err) { console.warn('Qualidade limitada pelo navegador/tela', err); }
   }
-  for (const s of sessions.values()) if (s.direction === 'send') await applySenderBitrate(s.pc);
+  if (isOwner) for (const pc of peers.values()) await applySenderBitrate(pc);
   const self = members.get(clientId);
   if (self) { self.quality = cfg.label; syncStreamTiles(); }
-  socket.emit('room:stream', { active: true, quality: cfg.label, audio: localStream.getAudioTracks().length > 0 });
+  if (isOwner) socket.emit('room:stream', { active: true, quality: cfg.label, audio: localStream.getAudioTracks().length > 0 });
+}
+async function makeHostPeer(viewerId) {
+  if (!isOwner || !localStream || !viewerId || viewerId === socket.id) return;
+  knownViewers.add(viewerId);
+  const pc = makePeer(viewerId, 'host');
+  for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await applySenderBitrate(pc);
+    socket.emit('webrtc:offer', { target: viewerId, sdp: pc.localDescription });
+  } catch (error) {
+    console.error('Falha ao criar oferta', error);
+    closePeer(viewerId);
+  }
+}
+function ensureHostPeers() {
+  if (!isOwner || !localStream) return;
+  for (const member of members.values()) {
+    if (member.clientId === clientId || !member.socketId) continue;
+    knownViewers.add(member.socketId);
+    if (!peers.has(member.socketId)) makeHostPeer(member.socketId);
+  }
+}
+function ownerInRoom() {
+  return [...members.values()].find(m => m.owner) || null;
+}
+function ensureViewerPeer(hostId) {
+  let pc = peers.get(hostId);
+  if (pc) return pc;
+  pc = makePeer(hostId, 'viewer');
+  pc.ontrack = event => {
+    const stream = event.streams?.[0] || new MediaStream([event.track]);
+    const host = findMemberBySocket(hostId) || ownerInRoom();
+    const hostClientId = host?.clientId || 'host';
+    viewerHostId = hostId;
+    remoteStreams.clear();
+    remoteStreams.set(hostClientId, { stream, socketId: hostId });
+    if (host) { host.streaming = true; host.audio = stream.getAudioTracks().length > 0; }
+    syncStreamTiles();
+    renderMixer();
+    const video = document.querySelector(`.stream-tile[data-client-id="${CSS.escape(hostClientId)}"] video`);
+    if (video) video.play().catch(() => toast('Clique na página para liberar o áudio da transmissão.'));
+  };
+  return pc;
 }
 async function startSharing() {
   if (!currentRoom || localStream) return;
+  if (!isOwner) return toast('Na transmissão estável da V3, somente o dono da sala apresenta a tela.');
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não suporta compartilhamento de tela.');
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
   try {
-    /*
-      Sem retorno: não usamos getUserMedia, então microfone/câmera nunca são solicitados.
-      systemAudio:'exclude' evita o áudio geral do Windows/Discord quando o Chrome respeita essa preferência.
-      windowAudio:'window' prioriza o som da janela escolhida em Chromes novos.
-    */
+    // Mantém o motor V3, mas preserva a proteção contra retorno solicitada.
+    // Nunca pedimos microfone/câmera. A prévia local fica muda e o Chrome é orientado a não capturar o áudio geral do sistema.
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: { frameRate: { ideal: cfg.fps, max: cfg.fps } },
       audio: true,
@@ -445,22 +486,25 @@ async function startSharing() {
       preferCurrentTab: false
     });
     localStream = stream;
-    await applyQualityToLocalTrack();
-    const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar };
-    self.streaming = true; self.quality = cfg.label; self.audio = stream.getAudioTracks().length > 0;
+    const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar, owner: true };
+    self.streaming = true;
+    self.quality = cfg.label;
+    self.audio = stream.getAudioTracks().length > 0;
     members.set(clientId, self);
     $('shareBtnLabel').textContent = 'Parar apresentação';
     $('shareBtn').classList.add('stop');
     syncStreamTiles();
-    ensureAllSendPeers();
+    await applyQualityToLocalTrack();
     socket.emit('room:stream', { active: true, quality: cfg.label, audio: self.audio });
+    for (const viewerId of knownViewers) makeHostPeer(viewerId);
+    ensureHostPeers();
     const videoTrack = stream.getVideoTracks()[0];
     if (videoTrack) videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
-    toast(self.audio ? 'Apresentação iniciada com áudio da fonte escolhida.' : 'Apresentação iniciada sem áudio.');
+    toast(self.audio ? 'Transmissão iniciada com áudio da janela/aba escolhida.' : 'Transmissão iniciada sem áudio.');
   } catch (err) {
     if (!['NotAllowedError', 'AbortError'].includes(err?.name)) {
       console.error(err);
-      toast('Não foi possível iniciar a apresentação.');
+      toast('Não foi possível iniciar a transmissão.');
       playUISound('error');
     }
   }
@@ -469,55 +513,82 @@ function stopSharing(notify = true) {
   if (!localStream) return;
   localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
   localStream = null;
-  closeAllSessions('send');
+  closeAllPeers();
   const self = members.get(clientId);
   if (self) { self.streaming = false; self.audio = false; }
   $('shareBtnLabel').textContent = 'Compartilhar tela';
   $('shareBtn').classList.remove('stop');
-  if (socket.connected && currentRoom) socket.emit('room:stream', { active: false, quality: QUALITY[selectedQuality].label, audio: false });
+  if (socket.connected && currentRoom && isOwner) socket.emit('room:stream', { active: false, quality: QUALITY[selectedQuality].label, audio: false });
   syncStreamTiles();
   renderMixer();
-  if (notify) { toast('Apresentação encerrada.'); playUISound('stop'); }
+  if (notify) { toast('Transmissão encerrada.'); playUISound('stop'); }
 }
 
-socket.on('webrtc:offer', async ({ from, sessionId, sdp }) => {
-  const member = findMemberBySocket(from);
-  if (!member) socket.emit('room:status');
-  if (sessions.has(sessionId)) closeSession(sessionId);
-  const session = createPeerSession({ sessionId, direction: 'recv', peerSocketId: from, peerClientId: member?.clientId || from });
-  session.pc.ontrack = event => {
-    const stream = event.streams?.[0] || new MediaStream([event.track]);
-    const m = findMemberBySocket(from);
-    const id = m?.clientId || session.peerClientId;
-    session.peerClientId = id;
-    remoteStreams.set(id, { stream, socketId: from });
-    syncStreamTiles();
-    renderMixer();
-    const video = document.querySelector(`.stream-tile[data-client-id="${CSS.escape(id)}"] video`);
-    if (video) video.play().catch(() => toast('Clique na página para liberar o áudio da transmissão.'));
-  };
+socket.on('viewer:joined', ({ viewerId }) => {
+  if (!isOwner || !viewerId) return;
+  knownViewers.add(viewerId);
+  if (localStream) makeHostPeer(viewerId);
+});
+socket.on('viewer:left', ({ viewerId }) => {
+  if (!viewerId) return;
+  knownViewers.delete(viewerId);
+  closePeer(viewerId);
+});
+socket.on('host:stream', ({ active, quality, audio }) => {
+  if (isOwner) return;
+  const host = ownerInRoom();
+  if (host) {
+    host.streaming = Boolean(active);
+    host.quality = quality || host.quality;
+    host.audio = Boolean(audio && active);
+  }
+  if (!active) {
+    if (viewerHostId) closePeer(viewerHostId);
+    viewerHostId = null;
+    remoteStreams.clear();
+  }
+  syncStreamTiles();
+  renderMixer();
+});
+socket.on('host:reconnecting', () => {
+  if (!isOwner) toast('O transmissor está se reconectando…');
+});
+socket.on('host:restored', ({ hostId }) => {
+  if (isOwner) return;
+  closeAllPeers();
+  remoteStreams.clear();
+  viewerHostId = hostId || null;
+  syncStreamTiles();
+});
+socket.on('webrtc:offer', async ({ from, sdp }) => {
+  if (isOwner || !from || !sdp) return;
+  viewerHostId = from;
+  const pc = ensureViewerPeer(from);
   try {
-    await session.pc.setRemoteDescription(sdp);
-    await flushIce(session);
-    const answer = await session.pc.createAnswer();
-    await session.pc.setLocalDescription(answer);
-    socket.emit('webrtc:answer', { target: from, sessionId, sdp: session.pc.localDescription });
-  } catch (err) {
-    console.error('Falha ao responder apresentação', err);
-    closeSession(sessionId);
+    await pc.setRemoteDescription(sdp);
+    await flushIce(from, pc);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('webrtc:answer', { target: from, sdp: pc.localDescription });
+  } catch (error) {
+    console.error('Falha ao responder oferta', error);
+    closePeer(from);
   }
 });
-socket.on('webrtc:answer', async ({ sessionId, sdp }) => {
-  const session = sessions.get(sessionId);
-  if (!session || session.direction !== 'send') return;
-  try { await session.pc.setRemoteDescription(sdp); await flushIce(session); }
-  catch (err) { console.warn('Resposta WebRTC não aplicada', err); }
+socket.on('webrtc:answer', async ({ from, sdp }) => {
+  if (!isOwner) return;
+  const pc = peers.get(from);
+  if (!pc) return;
+  try { await pc.setRemoteDescription(sdp); await flushIce(from, pc); }
+  catch (error) { console.error('Falha ao aplicar resposta', error); }
 });
-socket.on('webrtc:ice', async ({ sessionId, candidate }) => {
-  const session = sessions.get(sessionId);
-  if (!session) return;
-  if (!session.pc.remoteDescription) return queueIce(session, candidate);
-  try { await session.pc.addIceCandidate(candidate); } catch {}
+socket.on('webrtc:ice', async ({ from, candidate }) => {
+  if (!from || !candidate) return;
+  let pc = peers.get(from);
+  if (!pc && !isOwner) pc = ensureViewerPeer(from);
+  if (!pc) return;
+  if (!pc.remoteDescription) return queueIce(from, candidate);
+  try { await pc.addIceCandidate(candidate); } catch (error) { console.warn('ICE não aplicado', error); }
 });
 
 /* Grade e mix */
@@ -724,6 +795,7 @@ socket.on('room:status', data => { if (currentRoom && normalizeRoom(data.roomId)
 socket.on('member:joined', () => { playUISound('join'); socket.emit('room:status'); });
 socket.on('member:left', ({ clientId: leftId }) => {
   remoteStreams.delete(leftId); channelMix.delete(leftId); if (soloClientId === leftId) soloClientId = null;
+  cleanupPeersForMembers();
   playUISound('leave'); socket.emit('room:status');
 });
 socket.on('stream:state', ({ clientId: id, socketId, active, quality, audio }) => {
@@ -731,7 +803,8 @@ socket.on('stream:state', ({ clientId: id, socketId, active, quality, audio }) =
   if (member) { member.streaming = Boolean(active); member.quality = quality || member.quality; member.audio = Boolean(audio); member.socketId = socketId || member.socketId; }
   if (!active && id !== clientId) {
     remoteStreams.delete(id);
-    for (const [sid, s] of [...sessions]) if (s.direction === 'recv' && s.peerClientId === id) closeSession(sid);
+    const host = ownerInRoom();
+    if (host?.clientId === id && viewerHostId) { closePeer(viewerHostId); viewerHostId = null; }
   }
   syncStreamTiles(); renderMixer();
   if (id !== clientId) playUISound(active ? 'start' : 'stop');
@@ -748,7 +821,7 @@ socket.on('connect', () => {
 socket.on('disconnect', () => {
   reconnecting = true;
   $('connection').innerHTML = '<span>Reconectando…</span>';
-  closeAllSessions();
+  closeAllPeers();
 });
 
 /* Controles */

@@ -10,12 +10,12 @@ const io = new Server(server, {
   cors: { origin: true, credentials: true },
   transports: ['websocket', 'polling'],
   pingInterval: 10000,
-  pingTimeout: 25000,
+  pingTimeout: 20000,
   maxHttpBufferSize: 5e6
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const APP_VERSION = '4.1.0';
+const APP_VERSION = '4.2.0';
 const EMPTY_ROOM_TTL_MS = 120000;
 const MAX_CHAT = 100;
 const rooms = new Map();
@@ -39,26 +39,16 @@ app.get('/api/config', (_req, res) => {
       credential: process.env.TURN_CREDENTIAL || ''
     });
   }
-  res.json({
-    iceServers,
-    version: APP_VERSION,
-    updateNotes: [
-      'Várias pessoas podem transmitir ao mesmo tempo',
-      'Mix de som individual por transmissão',
-      'Chat em tempo real e avatar ajustável',
-      'Sala trancável e seletor de qualidade',
-      'Modo sem retorno com microfone bloqueado'
-    ]
-  });
+  res.json({ iceServers, version: APP_VERSION, transmissionEngine: 'v3-stable' });
 });
 app.get('/api/version', (_req, res) => {
   res.json({
     version: APP_VERSION,
     notes: [
-      'Múltiplas transmissões simultâneas',
-      'Mix de som e chat em tempo real',
-      'Avatar ajustável e sala trancável',
-      'Melhorias para evitar retorno de áudio'
+      'Motor de transmissão estável da V3 restaurado',
+      'Visual premium da V4.1 mantido',
+      'Prévia local sempre muda e microfone bloqueado',
+      'Chat, avatar, sala trancável e seletor de qualidade mantidos'
     ]
   });
 });
@@ -70,7 +60,7 @@ app.get('/api/public-rooms', (_req, res) => {
       roomId: formatRoom(roomId),
       ownerName: room.ownerName,
       members: room.members.size,
-      streaming: [...room.members.values()].filter(m => m.streaming).length,
+      streaming: room.members.get(room.ownerClientId)?.streaming ? 1 : 0,
       updatedAt: room.updatedAt
     }));
   res.json({ rooms: list });
@@ -102,9 +92,7 @@ function roomCode() {
   while (rooms.has(id));
   return id;
 }
-function token() {
-  return crypto.randomBytes(24).toString('hex');
-}
+function token() { return crypto.randomBytes(24).toString('hex'); }
 function clearCleanup(room) {
   if (room?.cleanupTimer) clearTimeout(room.cleanupTimer);
   if (room) room.cleanupTimer = null;
@@ -144,6 +132,13 @@ function emitStatus(roomId) {
   room.updatedAt = Date.now();
   io.to(roomId).emit('room:status', statusPayload(roomId, room));
 }
+function ownerMember(room) {
+  return room?.members.get(room.ownerClientId) || null;
+}
+function sameRoomTarget(socket, target) {
+  const targetSocket = io.sockets.sockets.get(target);
+  return Boolean(targetSocket && socket.data.roomId && targetSocket.data.roomId === socket.data.roomId);
+}
 function closeRoom(roomId, reason = 'closed') {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -160,21 +155,29 @@ function closeRoom(roomId, reason = 'closed') {
   }
   rooms.delete(roomId);
 }
-function sameRoomTarget(socket, target) {
-  const targetSocket = io.sockets.sockets.get(target);
-  return Boolean(targetSocket && socket.data.roomId && targetSocket.data.roomId === socket.data.roomId);
-}
 function removeSocketFromRoom(socket, explicit = false) {
   const roomId = socket.data.roomId;
   const clientId = socket.data.clientId;
   const room = rooms.get(roomId);
   if (!room || !clientId) return;
+
   const member = room.members.get(clientId);
   if (member?.socketId === socket.id) {
+    const isOwner = clientId === room.ownerClientId;
+    if (isOwner) {
+      member.streaming = false;
+      member.audio = false;
+      socket.to(roomId).emit('host:stream', { active: false });
+      socket.to(roomId).emit('host:reconnecting', { explicit });
+    } else {
+      const owner = ownerMember(room);
+      if (owner?.socketId) io.to(owner.socketId).emit('viewer:left', { viewerId: socket.id, viewerClientId: clientId });
+    }
     room.members.delete(clientId);
     socket.to(roomId).emit('member:left', { clientId, socketId: socket.id, explicit });
     emitStatus(roomId);
   }
+
   socket.leave(roomId);
   socket.data.roomId = null;
   socket.data.clientId = null;
@@ -215,7 +218,7 @@ io.on('connection', socket => {
     socket.data.roomId = id;
     socket.data.clientId = stableId;
     socket.data.ownerAuth = true;
-    ack({ ok: true, roomId: formatRoom(id), ownerToken, owner: true, status: statusPayload(id, room) });
+    ack({ ok: true, roomId: formatRoom(id), ownerToken, owner: true, hostId: socket.id, status: statusPayload(id, room) });
     emitStatus(id);
   });
 
@@ -231,18 +234,16 @@ io.on('connection', socket => {
 
     clearCleanup(room);
     const previous = room.members.get(stableId);
-    if (previous?.socketId && previous.socketId !== socket.id) {
-      io.to(previous.socketId).emit('member:replaced');
-    }
+    if (previous?.socketId && previous.socketId !== socket.id) io.to(previous.socketId).emit('member:replaced');
 
     const member = {
       clientId: stableId,
       socketId: socket.id,
       name: sanitizeNickname(nickname || previous?.name),
       avatar: sanitizeAvatar(avatar) || previous?.avatar || '',
-      streaming: false,
+      streaming: isOwner ? Boolean(previous?.streaming) : false,
       quality: previous?.quality || 'Auto',
-      audio: false,
+      audio: isOwner ? Boolean(previous?.audio) : false,
       joinedAt: previous?.joinedAt || Date.now()
     };
     room.members.set(stableId, member);
@@ -253,9 +254,30 @@ io.on('connection', socket => {
     socket.data.roomId = id;
     socket.data.clientId = stableId;
     socket.data.ownerAuth = isOwner;
-    ack({ ok: true, roomId: formatRoom(id), owner: isOwner, status: statusPayload(id, room) });
+
+    const owner = ownerMember(room);
+    ack({
+      ok: true,
+      roomId: formatRoom(id),
+      owner: isOwner,
+      hostId: owner?.socketId || null,
+      streaming: Boolean(owner?.streaming),
+      status: statusPayload(id, room)
+    });
+
     socket.to(id).emit('member:joined', memberPayload(member, room));
     emitStatus(id);
+
+    if (isOwner) {
+      socket.to(id).emit('host:restored', { hostId: socket.id });
+      for (const viewer of room.members.values()) {
+        if (viewer.clientId !== room.ownerClientId && viewer.socketId) {
+          io.to(socket.id).emit('viewer:joined', { viewerId: viewer.socketId, viewerClientId: viewer.clientId, resumed: true });
+        }
+      }
+    } else if (owner?.socketId) {
+      io.to(owner.socketId).emit('viewer:joined', { viewerId: socket.id, viewerClientId: stableId });
+    }
   });
 
   socket.on('room:status', () => {
@@ -296,22 +318,24 @@ io.on('connection', socket => {
     ack({ ok: true, isPublic: room.isPublic });
   });
 
+  // Motor de transmissão V3: somente o dono da sala transmite; espectadores recebem uma conexão direta dele.
   socket.on('room:stream', ({ active, quality, audio } = {}) => {
     const roomId = socket.data.roomId;
-    const clientId = socket.data.clientId;
     const room = rooms.get(roomId);
-    const member = room?.members.get(clientId);
-    if (!room || !member || member.socketId !== socket.id) return;
+    if (!room || !socket.data.ownerAuth || socket.data.clientId !== room.ownerClientId) return;
+    const member = room.members.get(room.ownerClientId);
+    if (!member || member.socketId !== socket.id) return;
     member.streaming = Boolean(active);
     member.quality = sanitizeText(quality, 24) || 'Auto';
     member.audio = Boolean(audio && active);
     io.to(roomId).emit('stream:state', {
-      clientId,
+      clientId: member.clientId,
       socketId: socket.id,
       active: member.streaming,
       quality: member.quality,
       audio: member.audio
     });
+    socket.to(roomId).emit('host:stream', { active: member.streaming, quality: member.quality, audio: member.audio });
     emitStatus(roomId);
   });
 
@@ -336,20 +360,15 @@ io.on('connection', socket => {
     ack({ ok: true });
   });
 
-  socket.on('webrtc:offer', ({ target, sessionId, sdp } = {}) => {
-    if (target && sessionId && sdp && sameRoomTarget(socket, target)) {
-      io.to(target).emit('webrtc:offer', { from: socket.id, sessionId: sanitizeText(sessionId, 120), sdp });
-    }
+  // Sinalização simples igual à V3, sem múltiplas sessões por usuário.
+  socket.on('webrtc:offer', ({ target, sdp } = {}) => {
+    if (target && sdp && sameRoomTarget(socket, target)) io.to(target).emit('webrtc:offer', { from: socket.id, sdp });
   });
-  socket.on('webrtc:answer', ({ target, sessionId, sdp } = {}) => {
-    if (target && sessionId && sdp && sameRoomTarget(socket, target)) {
-      io.to(target).emit('webrtc:answer', { from: socket.id, sessionId: sanitizeText(sessionId, 120), sdp });
-    }
+  socket.on('webrtc:answer', ({ target, sdp } = {}) => {
+    if (target && sdp && sameRoomTarget(socket, target)) io.to(target).emit('webrtc:answer', { from: socket.id, sdp });
   });
-  socket.on('webrtc:ice', ({ target, sessionId, candidate } = {}) => {
-    if (target && sessionId && candidate && sameRoomTarget(socket, target)) {
-      io.to(target).emit('webrtc:ice', { from: socket.id, sessionId: sanitizeText(sessionId, 120), candidate });
-    }
+  socket.on('webrtc:ice', ({ target, candidate } = {}) => {
+    if (target && candidate && sameRoomTarget(socket, target)) io.to(target).emit('webrtc:ice', { from: socket.id, candidate });
   });
 
   socket.on('room:leave', () => removeSocketFromRoom(socket, true));
