@@ -15,7 +15,7 @@ const io = new Server(server, {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const APP_VERSION = '4.5.0';
+const APP_VERSION = '4.2.0';
 const EMPTY_ROOM_TTL_MS = 120000;
 const MAX_CHAT = 100;
 const rooms = new Map();
@@ -46,31 +46,24 @@ app.get('/api/version', (_req, res) => {
     version: APP_VERSION,
     notes: [
       'Motor de transmissão estável da V3 restaurado',
-      'Visual desktop reconstruído para seguir o mockup aprovado',
+      'Visual premium da V4.1 mantido',
       'Prévia local sempre muda e microfone bloqueado',
-      'Configurações completas, abas e botões de atualização corrigidos',
-      'Lobby sincroniza automaticamente quando salas públicas mudam',
-      'Proteção extra: tela inteira não envia áudio do sistema para evitar retorno',
-      'Salas públicas aparecem no lobby mesmo quando ainda não há transmissão',
       'Chat, avatar, sala trancável e seletor de qualidade mantidos'
     ]
   });
 });
 app.get('/api/public-rooms', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   const list = [...rooms.entries()]
-    .filter(([, room]) => room.isPublic && room.members.size > 0)
-    .sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0))
-    .slice(0, 24)
+    .filter(([, room]) => room.isPublic && !room.locked && room.members.size > 0)
+    .slice(0, 12)
     .map(([roomId, room]) => ({
       roomId: formatRoom(roomId),
       ownerName: room.ownerName,
       members: room.members.size,
-      streaming: Boolean(room.members.get(room.ownerClientId)?.streaming),
-      locked: Boolean(room.locked),
+      streaming: room.members.get(room.ownerClientId)?.streaming ? 1 : 0,
       updatedAt: room.updatedAt
     }));
-  res.json({ rooms: list, at: Date.now() });
+  res.json({ rooms: list });
 });
 
 function normalizeRoom(value) {
@@ -100,9 +93,6 @@ function roomCode() {
   return id;
 }
 function token() { return crypto.randomBytes(24).toString('hex'); }
-function notifyLobbyRooms() {
-  io.emit('public-rooms:changed', { at: Date.now() });
-}
 function clearCleanup(room) {
   if (room?.cleanupTimer) clearTimeout(room.cleanupTimer);
   if (room) room.cleanupTimer = null;
@@ -112,7 +102,7 @@ function scheduleCleanup(roomId) {
   if (!room) return;
   clearCleanup(room);
   if (room.members.size > 0) return;
-  room.cleanupTimer = setTimeout(() => { rooms.delete(roomId); notifyLobbyRooms(); }, EMPTY_ROOM_TTL_MS);
+  room.cleanupTimer = setTimeout(() => rooms.delete(roomId), EMPTY_ROOM_TTL_MS);
 }
 function memberPayload(member, room) {
   return {
@@ -141,7 +131,6 @@ function emitStatus(roomId) {
   if (!room) return;
   room.updatedAt = Date.now();
   io.to(roomId).emit('room:status', statusPayload(roomId, room));
-  notifyLobbyRooms();
 }
 function ownerMember(room) {
   return room?.members.get(room.ownerClientId) || null;
@@ -165,7 +154,6 @@ function closeRoom(roomId, reason = 'closed') {
     }
   }
   rooms.delete(roomId);
-  notifyLobbyRooms();
 }
 function removeSocketFromRoom(socket, explicit = false) {
   const roomId = socket.data.roomId;
@@ -292,13 +280,10 @@ io.on('connection', socket => {
     }
   });
 
-  socket.on('room:status', (_payload = {}, ack = () => {}) => {
+  socket.on('room:status', () => {
     const roomId = socket.data.roomId;
     const room = rooms.get(roomId);
-    if (!room) return ack({ ok: false, error: 'Sala não encontrada.' });
-    const status = statusPayload(roomId, room);
-    socket.emit('room:status', status);
-    ack({ ok: true, status });
+    if (room) socket.emit('room:status', statusPayload(roomId, room));
   });
 
   socket.on('room:profile', ({ nickname, avatar } = {}, ack = () => {}) => {

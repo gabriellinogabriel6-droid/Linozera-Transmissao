@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="theme-color" content="#080510" />
-  <meta name="description" content="Linozera Transmissão V4.5 — compartilhamento de tela estável com configurações completas, chat, mix de som e visual premium." />
-  <title>Linozera — Transmissão V4.5</title>
+  <meta name="description" content="Linozera Transmissão V4.2 — compartilhamento de tela estável com chat, mix de som e visual premium." />
+  <title>Linozera — Transmissão V4.2</title>
   <link rel="icon" href="/linozera-logo.png" />
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -13,7 +13,7 @@
   <section id="home" class="home-page">
     <header class="home-nav shell">
       <a class="brand" href="#" aria-label="Linozera Transmissão">
-        <img class="brand-lockup-img" src="/brand-lockup-home.png" alt="Linozera Transmissão V4" />
+        <img src="/linozera-logo.png" alt="" />
         <span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span>
       </a>
       <nav>
@@ -21,7 +21,6 @@
         <a href="#publicRooms">Salas públicas</a>
         <a href="#support">Suporte⌄</a>
         <a class="discord-link" href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
-        <button id="homeSettingsBtn" class="nav-settings" title="Configurações">⚙</button>
         <button id="navEnterBtn" class="nav-enter">▣ &nbsp; Entrar</button>
       </nav>
     </header>
@@ -44,14 +43,16 @@
         </div>
 
         <div class="hero-brand" aria-hidden="true">
-          <img class="hero-reference" src="/hero-lockup.png" alt="" />
+          <div class="hero-logo-wrap"><img src="/linozera-logo.png" alt="" /></div>
+          <div class="hero-wordmark">LINOZERA<small>TRANSMISSÃO V4</small></div>
+          <div class="hero-smoke"></div>
         </div>
 
         <section id="entryCard" class="entry-card">
           <h2>Entre na plataforma</h2>
           <div class="profile-entry">
             <button id="homeAvatarBtn" class="avatar-btn" title="Escolher avatar">
-              <img id="homeAvatarImg" src="/default-avatar.png" alt="Seu avatar" />
+              <img id="homeAvatarImg" src="/linozera-logo.png" alt="Seu avatar" />
               <span>✎</span>
             </button>
             <label class="field grow">
@@ -67,9 +68,9 @@
             <input id="roomInput" maxlength="9" autocomplete="off" placeholder="XXXX-XXXX" spellcheck="false" />
           </label>
           <button id="joinBtn" class="btn outline full">Entrar na sala &nbsp; →</button>
-          <label class="switch-line lobby-private-toggle" title="Sala privada: apenas convidados com o código/link podem entrar">
-            <span><b>▣ &nbsp; Sala privada</b><small>Apenas convidados</small></span>
-            <input id="publicToggle" type="checkbox" checked />
+          <label class="switch-line" title="Salas públicas aparecem no lobby enquanto estiverem abertas">
+            <span>◈ &nbsp; Listar minha sala no lobby</span>
+            <input id="publicToggle" type="checkbox" />
             <i></i>
           </label>
         </section>
@@ -77,11 +78,11 @@
 
       <section id="publicRooms" class="home-section">
         <div class="section-head">
-          <div><small>◉ &nbsp; SALAS PÚBLICAS AO VIVO</small><h2>Salas disponíveis agora</h2><span id="publicRoomsStatus" class="section-status">Atualizando…</span></div>
-          <button id="refreshRoomsBtn" class="text-btn">Ver todas as salas &nbsp; →</button>
+          <div><small>◉ &nbsp; SALAS PÚBLICAS AO VIVO</small><h2>Descubra transmissões</h2></div>
+          <button id="refreshRoomsBtn" class="text-btn">Atualizar ↻</button>
         </div>
         <div id="publicRoomsGrid" class="public-grid">
-          <div class="public-empty">Nenhuma sala pública disponível agora.</div>
+          <div class="public-empty">Nenhuma sala pública ao vivo agora.</div>
         </div>
       </section>
 
@@ -103,13 +104,13 @@
         <span><b>⚡ Desempenho otimizado</b><small>Servidor de baixa latência</small></span>
         <span><b>♙ Comunidade ativa</b><small>Converse no Discord</small></span>
       </div>
-      <div class="footer-version">V4.5</div>
+      <div class="footer-version">V4.2</div>
     </footer>
   </section>
 
   <section id="roomView" class="room-page hidden">
     <header class="room-topbar">
-      <div class="brand mini room-brand"><img class="brand-lockup-img" src="/brand-lockup-room.png" alt="Linozera Transmissão V4" /><span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span></div>
+      <div class="brand mini"><img src="/linozera-logo.png" alt="" /><span><b>LINOZERA</b><small>TRANSMISSÃO V4</small></span></div>
       <button id="topRoomCode" class="room-code-chip">CÓDIGO DA SALA &nbsp; <b>XXXX-XXXX</b> &nbsp; ▢</button>
       <div class="top-spacer"></div>
       <a class="discord-chip" href="https://discord.gg/WndvT5HgG8" target="_blank" rel="noopener">Discord</a>
@@ -129,7 +130,6 @@
             <div id="roomPrivacyBadge" class="privacy-badge">◈ SALA ABERTA</div>
             <button id="copyLinkBtn" class="btn primary full small">↗ &nbsp; Copiar link do convite</button>
             <button id="lockBtn" class="btn ghost full small owner-only">🔒 &nbsp; Trancar sala</button>
-            <button id="refreshRoomBtn" class="btn ghost full small">↻ &nbsp; Atualizar sala</button>
             <button id="closeRoomBtn" class="btn danger-ghost full small owner-only">Encerrar sala</button>
           </div>
 
@@ -140,14 +140,14 @@
 
           <div class="profile-side">
             <div class="profile-side-head">
-              <img id="roomAvatarImg" src="/default-avatar.png" alt="" />
+              <img id="roomAvatarImg" src="/linozera-logo.png" alt="" />
               <div><b id="myNameLabel">Linozera</b><small>Você</small></div>
             </div>
             <button id="editAvatarBtn2" class="btn ghost full small">Editar meu avatar &nbsp; ⚙</button>
             <div class="avatar-mini-editor" aria-hidden="true">
               <div class="mini-tabs"><span>AVATAR</span><b>POSICIONAMENTO</b></div>
               <div class="mini-position">
-                <div class="mini-avatar-ring"><img src="/default-avatar.png" alt="" /></div>
+                <div class="mini-avatar-ring"><img src="/linozera-logo.png" alt="" /></div>
                 <div class="mini-pad"><i></i><button tabindex="-1">↑</button><i></i><button tabindex="-1">←</button><button tabindex="-1">•</button><button tabindex="-1">→</button><i></i><button tabindex="-1">↓</button><i></i></div>
               </div>
               <div class="mini-zoom"><span>ZOOM</span><div><i>−</i><b></b><i>100%</i></div></div>
@@ -177,8 +177,8 @@
         <section id="mixerPanel" class="mixer-panel">
           <div class="mixer-head"><div><small>≋ &nbsp; MIX DE SOM</small><span>Controle somente o que você ouve</span></div><button id="closeMixerBtn" class="icon-btn">×</button></div>
           <div class="master-channel">
-            <label><span>VOLUME MASTER</span><b id="masterVolumeLabel">110%</b></label>
-            <input id="masterVolume" type="range" min="0" max="150" value="110" />
+            <label><span>VOLUME MASTER</span><b id="masterVolumeLabel">100%</b></label>
+            <input id="masterVolume" type="range" min="0" max="100" value="100" />
           </div>
           <div id="mixerChannels" class="mixer-channels"></div>
           <div class="mixer-note">M = silenciar &nbsp; • &nbsp; S = ouvir somente essa transmissão</div>
@@ -251,58 +251,11 @@
   </div>
 
   <div id="settingsModal" class="modal-backdrop hidden">
-    <div class="modal settings-modal settings-full">
-      <div class="modal-head"><div><small>CENTRAL DE CONTROLE</small><h2>Configurações</h2><p class="modal-sub">As alterações são aplicadas na hora e ficam salvas neste navegador.</p></div><button data-close="settingsModal" class="icon-btn">×</button></div>
-
-      <div class="settings-tabs" role="tablist">
-        <button class="settings-tab active" data-settings-tab="general">Geral</button>
-        <button class="settings-tab" data-settings-tab="audio">Áudio</button>
-        <button class="settings-tab" data-settings-tab="transmission">Transmissão</button>
-        <button class="settings-tab room-settings-tab" data-settings-tab="room">Sala</button>
-      </div>
-
-      <section class="settings-pane active" data-settings-pane="general">
-        <div class="setting-row"><div><b>Sons interativos</b><span>Entrada, chat, transmissão, conexão e atualização.</span></div><label class="switch-line compact"><input id="soundToggle" type="checkbox" checked /><i></i></label></div>
-        <div class="setting-row column"><label>Volume dos sons <b id="soundVolumeLabel">70%</b></label><input id="soundVolume" type="range" min="0" max="100" value="70" /></div>
-        <div class="setting-row"><div><b>Abrir chat automaticamente</b><span>Mostra o chat ao entrar em uma sala.</span></div><label class="switch-line compact"><input id="autoChatToggle" type="checkbox" checked /><i></i></label></div>
-      </section>
-
-      <section class="settings-pane" data-settings-pane="audio">
-        <div class="setting-row column"><label>Volume padrão das transmissões <b id="defaultMasterVolumeLabel">110%</b></label><input id="defaultMasterVolume" type="range" min="0" max="150" value="110" /></div>
-        <div class="setting-row"><div><b>Som reforçado</b><span>Permite aumentar o áudio recebido acima de 100% usando o mixer.</span></div><label class="switch-line compact"><input id="audioBoostToggle" type="checkbox" checked /><i></i></label></div>
-        <div class="setting-note success-note">Sua própria transmissão continua muda para você. O mixer só altera o áudio que você recebe.</div>
-      </section>
-
-      <section class="settings-pane" data-settings-pane="transmission">
-        <div class="setting-row column">
-          <label for="defaultQualitySelect">Qualidade padrão ao apresentar</label>
-          <select id="defaultQualitySelect" class="setting-select">
-            <option value="auto">Automático</option>
-            <option value="480p30">480p • 30 FPS</option>
-            <option value="720p30">720p • 30 FPS</option>
-            <option value="1080p30">1080p • 30 FPS</option>
-            <option value="1080p60">1080p • 60 FPS</option>
-            <option value="1440p60">1440p • 60 FPS</option>
-          </select>
-        </div>
-        <div class="setting-row fixed-setting"><div><b>Modo sem retorno</b><span>Microfone bloqueado, prévia local muda e preferência por áudio da janela/aba.</span></div><span class="status-ok">ATIVO</span></div>
-      </section>
-
-      <section class="settings-pane" data-settings-pane="room">
-        <div id="roomSettingsUnavailable" class="settings-empty">Entre em uma sala para usar estas opções.</div>
-        <div id="roomSettingsControls" class="room-settings-controls hidden">
-          <div class="setting-row"><div><b>Mostrar sala no lobby</b><span>Quando ativado, sua sala aparece na lista pública.</span></div><label class="switch-line compact"><input id="roomPublicToggleSettings" type="checkbox" /><i></i></label></div>
-          <div class="setting-row"><div><b>Trancar sala</b><span>Impede novos participantes de entrar.</span></div><label class="switch-line compact"><input id="roomLockToggleSettings" type="checkbox" /><i></i></label></div>
-          <div class="settings-action-grid">
-            <button id="settingsRefreshRoomBtn" class="btn ghost full small">↻ Atualizar sala agora</button>
-            <button id="settingsCopyInviteBtn" class="btn ghost full small">↗ Copiar convite</button>
-            <button id="settingsCloseRoomBtn" class="btn danger-ghost full small owner-only">Encerrar sala</button>
-          </div>
-          <div id="roomSettingsStatus" class="settings-room-status">Status da sala pronto.</div>
-        </div>
-      </section>
-
-      <div class="settings-footer"><span id="settingsSaveState">Configurações salvas automaticamente.</span><button id="settingsDoneBtn" class="btn primary small">Concluído</button></div>
+    <div class="modal settings-modal">
+      <div class="modal-head"><div><small>PREFERÊNCIAS</small><h2>Configurações</h2></div><button data-close="settingsModal" class="icon-btn">×</button></div>
+      <div class="setting-row"><div><b>Sons interativos</b><span>Entrada, chat, transmissão, conexão e atualização.</span></div><label class="switch-line compact"><input id="soundToggle" type="checkbox" checked /><i></i></label></div>
+      <div class="setting-row column"><label>Volume dos sons <b id="soundVolumeLabel">45%</b></label><input id="soundVolume" type="range" min="0" max="100" value="45" /></div>
+      <div class="setting-note">Durante sua própria transmissão, os sons da interface ficam suspensos para não entrarem no compartilhamento.</div>
     </div>
   </div>
 

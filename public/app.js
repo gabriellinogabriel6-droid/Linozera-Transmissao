@@ -1,4 +1,4 @@
-const BUILD_VERSION = '4.5.0';
+const BUILD_VERSION = '4.2.0';
 const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
 const socket = io({ transports: ['websocket', 'polling'] });
 const $ = id => document.getElementById(id);
@@ -28,7 +28,6 @@ let roomPublic = false;
 let members = new Map();
 let localStream = null;
 let selectedQuality = localStorage.getItem('lnz_quality') || 'auto';
-if (!QUALITY[selectedQuality]) selectedQuality = 'auto';
 let layoutMode = 'grid';
 let focusedClientId = null;
 let reconnecting = false;
@@ -40,18 +39,14 @@ let viewerHostId = null;
 const remoteStreams = new Map();
 const chatIds = new Set();
 const channelMix = new Map();
-const audioPipelines = new Map();
-let masterVolume = Math.max(0, Math.min(1.5, Number(localStorage.getItem('lnz_master_volume') ?? '110') / 100));
+let masterVolume = 1;
 let soloClientId = null;
 
 let soundEnabled = localStorage.getItem('lnz_sounds') !== '0';
-let soundVolume = Math.max(0, Math.min(1, Number(localStorage.getItem('lnz_sound_volume') ?? '70') / 100));
-let autoChatOpen = localStorage.getItem('lnz_auto_chat') !== '0';
-let audioBoostEnabled = localStorage.getItem('lnz_audio_boost') !== '0';
+let soundVolume = Number(localStorage.getItem('lnz_sound_volume') ?? '45') / 100;
 let audioContext = null;
-let publicRoomsLoading = false;
 
-let avatarSource = currentAvatar || '/default-avatar.png';
+let avatarSource = currentAvatar || '/linozera-logo.png';
 let avatarX = 0;
 let avatarY = 0;
 let avatarZoom = 1;
@@ -71,7 +66,7 @@ function sanitizeNickname(value) {
   return String(value || '').replace(/[<>]/g, '').trim().replace(/\s+/g, ' ').slice(0, 24);
 }
 function safeAvatar(avatar) {
-  return avatar && avatar.startsWith('data:image/') ? avatar : '/default-avatar.png';
+  return avatar && avatar.startsWith('data:image/') ? avatar : '/linozera-logo.png';
 }
 function initials(name) {
   return String(name || '?').trim().slice(0, 1).toUpperCase() || '?';
@@ -119,7 +114,7 @@ function updateNicknameCounter() {
   $('nickCount').textContent = `${value.length}/24`;
 }
 function updateProfileImages() {
-  const src = currentAvatar || '/default-avatar.png';
+  const src = currentAvatar || '/linozera-logo.png';
   $('homeAvatarImg').src = src;
   $('roomAvatarImg').src = src;
   $('myNameLabel').textContent = currentNickname || 'Você';
@@ -151,166 +146,42 @@ function playUISound(type = 'tap') {
     osc.start(); osc.stop(ctx.currentTime + dur);
   } catch {}
 }
-document.addEventListener('pointerdown', () => { if (soundEnabled || audioBoostEnabled) ensureAudioContext(); }, { once: true });
-
-/* Áudio recebido: Web Audio permite reforço acima de 100% sem mexer no áudio enviado. */
-function disposeAudioPipeline(id) {
-  const pipe = audioPipelines.get(id);
-  if (!pipe) return;
-  try { pipe.source.disconnect(); } catch {}
-  try { pipe.gain.disconnect(); } catch {}
-  audioPipelines.delete(id);
-}
-function disposeAllAudioPipelines() {
-  [...audioPipelines.keys()].forEach(disposeAudioPipeline);
-}
-function ensureRemoteAudioPipeline(id, stream) {
-  if (!id || id === clientId || !stream?.getAudioTracks?.().length) {
-    disposeAudioPipeline(id);
-    return null;
-  }
-  const existing = audioPipelines.get(id);
-  if (existing?.stream === stream) return existing;
-  disposeAudioPipeline(id);
-  try {
-    const ctx = ensureAudioContext();
-    const audioOnly = new MediaStream(stream.getAudioTracks());
-    const source = ctx.createMediaStreamSource(audioOnly);
-    const gain = ctx.createGain();
-    source.connect(gain).connect(ctx.destination);
-    const pipe = { stream, source, gain };
-    audioPipelines.set(id, pipe);
-    return pipe;
-  } catch (error) {
-    console.warn('Áudio reforçado indisponível; usando volume padrão do navegador.', error);
-    return null;
-  }
-}
+document.addEventListener('pointerdown', () => { if (soundEnabled) ensureAudioContext(); }, { once: true });
 
 /* Lobby */
-async function loadPublicRooms(showFeedback = false) {
+async function loadPublicRooms() {
   const grid = $('publicRoomsGrid');
-  const status = $('publicRoomsStatus');
-  const button = $('refreshRoomsBtn');
-  if (!grid || publicRoomsLoading) return;
-  publicRoomsLoading = true;
-  if (button) { button.disabled = true; button.classList.add('loading'); button.textContent = '↻ Atualizando…'; }
-  if (status) status.textContent = 'Buscando salas no servidor…';
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7000);
-    const response = await fetch(`/api/public-rooms?t=${Date.now()}`, { cache: 'no-store', signal: controller.signal });
-    clearTimeout(timer);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    const data = await fetch('/api/public-rooms', { cache: 'no-store' }).then(r => r.json());
     const list = Array.isArray(data.rooms) ? data.rooms : [];
     if (!list.length) {
-      grid.innerHTML = '<div class="public-empty"><b>Nenhuma sala pública agora.</b><span>Crie uma sala e ative “Listar minha sala no lobby”.</span></div>';
-    } else {
-      grid.innerHTML = list.map(room => {
-        const live = Boolean(room.streaming);
-        const locked = Boolean(room.locked);
-        const badge = locked ? '🔒 TRANCADA' : (live ? '● AO VIVO' : '◌ ABERTA');
-        const badgeClass = locked ? 'locked' : (live ? 'live' : 'open');
-        return `
-          <article class="public-card ${locked ? 'is-locked' : ''}" data-room="${escapeHtml(room.roomId)}" data-locked="${locked ? '1' : '0'}">
-            <div class="public-thumb"><span class="live-badge ${badgeClass}">${badge}</span><div class="public-logo-mark">LNZ</div></div>
-            <div class="public-info">
-              <h3>${escapeHtml(room.roomId)}</h3>
-              <p>${escapeHtml(room.ownerName || 'Linozera')}</p>
-              <div class="public-stats"><span>♙ ${Number(room.members || 0)} na sala</span><span>${live ? '▥ transmitindo' : '◌ aguardando'}</span></div>
-              <span class="privacy-badge">${locked ? 'SALA TRANCADA' : 'ENTRAR NA SALA →'}</span>
-            </div>
-          </article>`;
-      }).join('');
-      $$('.public-card').forEach(card => card.addEventListener('click', () => {
-        $('roomInput').value = card.dataset.room;
-        $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
-        if (card.dataset.locked === '1') toast('Essa sala está trancada. O dono precisa destrancar para novos participantes.');
-        else toast(`Sala ${card.dataset.room} selecionada.`);
-      }));
+      grid.innerHTML = '<div class="public-empty">Nenhuma sala pública ao vivo agora.</div>';
+      return;
     }
-    const now = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-    if (status) status.textContent = `${list.length} sala${list.length === 1 ? '' : 's'} • atualizado às ${now}`;
-    if (showFeedback) toast(list.length ? `${list.length} sala(s) pública(s) encontrada(s).` : 'Lista atualizada. Nenhuma sala pública agora.');
-  } catch (error) {
-    console.error('Falha ao carregar salas públicas', error);
-    grid.innerHTML = '<div class="public-empty error"><b>Não foi possível carregar as salas.</b><span>Confira a conexão com o Render e tente novamente.</span></div>';
-    if (status) status.textContent = 'Falha ao atualizar';
-    if (showFeedback) toast('Falha ao atualizar as salas públicas.');
-  } finally {
-    publicRoomsLoading = false;
-    if (button) { button.disabled = false; button.classList.remove('loading'); button.textContent = 'Ver todas as salas  →'; }
+    grid.innerHTML = list.map(room => `
+      <article class="public-card" data-room="${escapeHtml(room.roomId)}">
+        <div class="public-thumb"><span class="live-badge">AO VIVO</span></div>
+        <div class="public-info">
+          <h3>${escapeHtml(room.roomId)}</h3>
+          <p>${escapeHtml(room.ownerName || 'Linozera')}</p>
+          <div class="public-stats"><span>♙ ${room.members}</span><span>◉ ${room.streaming} transmitindo</span></div>
+          <span class="privacy-badge">ENTRAR NA SALA →</span>
+        </div>
+      </article>`).join('');
+    $$('.public-card').forEach(card => card.addEventListener('click', () => {
+      $('roomInput').value = card.dataset.room;
+      $('entryCard').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }));
+  } catch {
+    grid.innerHTML = '<div class="public-empty">Não foi possível carregar as salas agora.</div>';
   }
-}
-
-function syncSettingsUI() {
-  const soundToggle = $('soundToggle');
-  const soundRange = $('soundVolume');
-  const autoChat = $('autoChatToggle');
-  const defaultMaster = $('defaultMasterVolume');
-  const boost = $('audioBoostToggle');
-  const quality = $('defaultQualitySelect');
-  const roomUnavailable = $('roomSettingsUnavailable');
-  const roomControls = $('roomSettingsControls');
-  const roomPublicToggle = $('roomPublicToggleSettings');
-  const roomLockToggle = $('roomLockToggleSettings');
-
-  if (soundToggle) soundToggle.checked = soundEnabled;
-  if (soundRange) soundRange.value = String(Math.round(soundVolume * 100));
-  if ($('soundVolumeLabel')) $('soundVolumeLabel').textContent = `${Math.round(soundVolume * 100)}%`;
-  if (autoChat) autoChat.checked = autoChatOpen;
-
-  const masterPct = Math.round(masterVolume * 100);
-  if ($('masterVolume')) $('masterVolume').value = String(masterPct);
-  if ($('masterVolumeLabel')) $('masterVolumeLabel').textContent = `${masterPct}%`;
-  if (defaultMaster) defaultMaster.value = String(masterPct);
-  if ($('defaultMasterVolumeLabel')) $('defaultMasterVolumeLabel').textContent = `${masterPct}%`;
-  if (boost) boost.checked = audioBoostEnabled;
-  if (quality) quality.value = selectedQuality;
-
-  const inRoom = Boolean(currentRoom);
-  if (roomUnavailable) roomUnavailable.classList.toggle('hidden', inRoom);
-  if (roomControls) roomControls.classList.toggle('hidden', !inRoom);
-  if (roomPublicToggle) {
-    roomPublicToggle.checked = roomPublic;
-    roomPublicToggle.disabled = !isOwner;
-  }
-  if (roomLockToggle) {
-    roomLockToggle.checked = roomLocked;
-    roomLockToggle.disabled = !isOwner;
-  }
-  if ($('settingsRefreshRoomBtn')) $('settingsRefreshRoomBtn').disabled = !inRoom;
-  if ($('settingsCopyInviteBtn')) $('settingsCopyInviteBtn').disabled = !inRoom;
-  if ($('settingsCloseRoomBtn')) $('settingsCloseRoomBtn').disabled = !inRoom || !isOwner;
-  if ($('roomSettingsStatus')) {
-    $('roomSettingsStatus').textContent = inRoom
-      ? (isOwner ? 'Você é o dono desta sala.' : 'Somente o dono pode alterar visibilidade e bloqueio.')
-      : 'Entre em uma sala para usar estas opções.';
-  }
-}
-
-function openSettings(tab = 'general') {
-  syncSettingsUI();
-  const target = currentRoom && tab === 'room' ? 'room' : tab;
-  $$('.settings-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.settingsTab === target));
-  $$('[data-settings-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.settingsPane === target));
-  showModal('settingsModal');
-}
-
-function selectSettingsTab(tab) {
-  $$('.settings-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.settingsTab === tab));
-  $$('[data-settings-pane]').forEach(pane => pane.classList.toggle('active', pane.dataset.settingsPane === tab));
-  syncSettingsUI();
 }
 
 function showRoom() {
   $('home').classList.add('hidden');
   $('roomView').classList.remove('hidden');
   document.body.style.overflow = 'hidden';
-  $('chatPanel').classList.toggle('closed', !autoChatOpen);
   updateProfileImages();
-  syncSettingsUI();
 }
 function showHome() {
   $('roomView').classList.add('hidden');
@@ -320,7 +191,6 @@ function showHome() {
 }
 
 function createRoom() {
-  try { ensureAudioContext(); } catch {}
   const nickname = requireNickname();
   if (!nickname) return;
   playUISound('tap');
@@ -328,7 +198,7 @@ function createRoom() {
     clientId,
     nickname,
     avatar: currentAvatar,
-    isPublic: !$('publicToggle').checked
+    isPublic: $('publicToggle').checked
   }, result => {
     if (!result?.ok) return toast(result?.error || 'Não foi possível criar a sala.');
     currentRoom = normalizeRoom(result.roomId);
@@ -340,7 +210,6 @@ function createRoom() {
   });
 }
 function joinRoom(value, fromReconnect = false) {
-  if (!fromReconnect) { try { ensureAudioContext(); } catch {} }
   const nickname = fromReconnect ? currentNickname : requireNickname();
   if (!nickname) return;
   const roomId = normalizeRoom(value);
@@ -415,7 +284,6 @@ function renderRoomState() {
   $('lockBtn').innerHTML = roomLocked ? '🔓 &nbsp; Destrancar sala' : '🔒 &nbsp; Trancar sala';
   [$('shareBtn'), $('emptyShareBtn'), $('qualityBtn')].forEach(el => { if (el) { el.disabled = !isOwner; el.classList.toggle('disabled', !isOwner); } });
   if (!localStream) $('shareBtnLabel').textContent = isOwner ? 'Compartilhar tela' : 'Somente assistir';
-  syncSettingsUI();
 }
 
 function avatarMarkup(member, cls = 'member-avatar') {
@@ -441,47 +309,14 @@ function findMemberBySocket(socketId) {
   for (const member of members.values()) if (member.socketId === socketId) return member;
   return null;
 }
-function setRoomLock(nextLocked, showFeedback = true) {
-  if (!isOwner) return showFeedback && toast('Apenas o dono da sala pode alterar o bloqueio.');
-  socket.emit('room:lock', { locked: Boolean(nextLocked) }, result => {
+function toggleLock() {
+  if (!isOwner) return;
+  socket.emit('room:lock', { locked: !roomLocked }, result => {
     if (!result?.ok) return toast(result?.error || 'Não foi possível alterar a sala.');
     roomLocked = Boolean(result.locked);
     renderRoomState();
-    syncSettingsUI();
     playUISound(roomLocked ? 'lock' : 'unlock');
-    if (showFeedback) toast(roomLocked ? 'Sala trancada.' : 'Sala destrancada.');
   });
-}
-function toggleLock() { setRoomLock(!roomLocked); }
-function setRoomVisibility(nextPublic, showFeedback = true) {
-  if (!isOwner) return showFeedback && toast('Apenas o dono pode alterar a visibilidade da sala.');
-  socket.emit('room:visibility', { isPublic: Boolean(nextPublic) }, result => {
-    if (!result?.ok) return toast(result?.error || 'Não foi possível alterar a visibilidade.');
-    roomPublic = Boolean(result.isPublic);
-    renderRoomState();
-    syncSettingsUI();
-    if (showFeedback) toast(roomPublic ? 'Sala pública: ela aparecerá no lobby.' : 'Sala privada: removida do lobby.');
-    loadPublicRooms();
-  });
-}
-function refreshRoomStatus(showFeedback = true) {
-  if (!currentRoom) return showFeedback && toast('Você ainda não entrou em uma sala.');
-  const buttons = [$('refreshRoomBtn'), $('settingsRefreshRoomBtn')].filter(Boolean);
-  buttons.forEach(btn => { btn.disabled = true; btn.dataset.oldText ||= btn.textContent; btn.textContent = '↻ Atualizando…'; });
-  let finished = false;
-  const finish = (result) => {
-    if (finished) return;
-    finished = true;
-    buttons.forEach(btn => { btn.disabled = false; btn.textContent = btn.dataset.oldText || '↻ Atualizar sala'; });
-    if (result?.ok && result.status) {
-      applyRoomStatus(result.status);
-      const now = new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
-      if ($('roomSettingsStatus')) $('roomSettingsStatus').textContent = `Sala sincronizada às ${now}.`;
-      if (showFeedback) toast('Sala atualizada com o servidor.');
-    } else if (showFeedback) toast(result?.error || 'Não foi possível atualizar a sala.');
-  };
-  const timer = setTimeout(() => finish({ ok:false, error:'O servidor demorou para responder.' }), 6000);
-  socket.emit('room:status', {}, result => { clearTimeout(timer); finish(result); });
 }
 function closeRoom() {
   if (!isOwner || !confirm('Encerrar a sala para todos?')) return;
@@ -501,10 +336,7 @@ function resetRoomState() {
   knownViewers.clear();
   viewerHostId = null;
   remoteStreams.clear();
-  disposeAllAudioPipelines();
   members.clear();
-  channelMix.clear();
-  soloClientId = null;
   chatIds.clear();
   $('chatMessages').innerHTML = '<div class="chat-empty"><b>▢</b><strong>Nenhuma mensagem ainda</strong><span>Envie uma mensagem para a sala.</span></div>';
   currentRoom = null;
@@ -653,15 +485,6 @@ async function startSharing() {
       windowAudio: 'window',
       preferCurrentTab: false
     });
-    const displaySurface = stream.getVideoTracks()[0]?.getSettings?.().displaySurface || '';
-    if (displaySurface === 'monitor' && stream.getAudioTracks().length) {
-      // Tela inteira pode misturar Discord/Windows. Para garantir o modo sem retorno,
-      // descartamos o áudio nessa modalidade. Janela/aba continua podendo enviar áudio.
-      for (const track of [...stream.getAudioTracks()]) {
-        try { stream.removeTrack(track); track.stop(); } catch {}
-      }
-      toast('Tela inteira: áudio do sistema foi removido para evitar retorno. Para transmitir som, compartilhe uma janela ou aba.');
-    }
     localStream = stream;
     const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar, owner: true };
     self.streaming = true;
@@ -723,7 +546,6 @@ socket.on('host:stream', ({ active, quality, audio }) => {
     if (viewerHostId) closePeer(viewerHostId);
     viewerHostId = null;
     remoteStreams.clear();
-    disposeAllAudioPipelines();
   }
   syncStreamTiles();
   renderMixer();
@@ -735,7 +557,6 @@ socket.on('host:restored', ({ hostId }) => {
   if (isOwner) return;
   closeAllPeers();
   remoteStreams.clear();
-  disposeAllAudioPipelines();
   viewerHostId = hostId || null;
   syncStreamTiles();
 });
@@ -817,15 +638,9 @@ function ensureTile(member) {
       tile.insertBefore(video, tile.firstChild);
     }
     if (video.srcObject !== stream) video.srcObject = stream;
-    if (member.clientId === clientId) {
-      video.muted = true;
-      video.volume = 0;
-      video.setAttribute('aria-label', 'Sua transmissão local muda');
-    } else {
-      const pipe = ensureRemoteAudioPipeline(member.clientId, stream);
-      video.muted = Boolean(pipe);
-      applyVolumeFor(member.clientId, video);
-    }
+    video.muted = member.clientId === clientId;
+    if (member.clientId === clientId) { video.volume = 0; video.setAttribute('aria-label', 'Sua transmissão local muda'); }
+    else applyVolumeFor(member.clientId, video);
     waiting?.classList.add('hidden');
   } else {
     if (video) { video.srcObject = null; video.remove(); }
@@ -865,19 +680,10 @@ function applyVolumeFor(id, video = null) {
   if (id === clientId) return;
   const state = mixState(id);
   const target = video || document.querySelector(`.stream-tile[data-client-id="${CSS.escape(id)}"] video`);
-  const soloBlocks = Boolean(soloClientId && soloClientId !== id);
-  const blocked = Boolean(state.muted || soloBlocks);
-  const maxGain = audioBoostEnabled ? 2 : 1;
-  const effective = blocked ? 0 : Math.max(0, Math.min(maxGain, masterVolume * state.volume));
-  const pipe = audioPipelines.get(id);
-  if (pipe) {
-    try { pipe.gain.gain.setTargetAtTime(effective, pipe.gain.context.currentTime, 0.015); } catch { pipe.gain.gain.value = effective; }
-    if (target) target.muted = true;
-    return;
-  }
   if (!target) return;
-  target.muted = blocked;
-  target.volume = Math.max(0, Math.min(1, effective));
+  const soloBlocks = soloClientId && soloClientId !== id;
+  target.muted = Boolean(state.muted || soloBlocks);
+  target.volume = Math.max(0, Math.min(1, masterVolume * state.volume));
 }
 function applyAllVolumes() {
   for (const member of getStreamingMembers()) if (member.clientId !== clientId) applyVolumeFor(member.clientId);
@@ -897,7 +703,7 @@ function renderMixer() {
     channel.className = 'mixer-channel';
     channel.innerHTML = `
       <div class="mixer-channel-head">${member.avatar ? `<img src="${member.avatar}" alt="" />` : `<div class="mix-fallback">${escapeHtml(initials(member.name))}</div>`}<b>${escapeHtml(member.name)}</b><span>${local ? 'LOCAL' : Math.round(state.volume*100)+'%'}</span></div>
-      <input class="channel-volume" type="range" min="0" max="${audioBoostEnabled ? 150 : 100}" value="${Math.round(state.volume*100)}" ${local ? 'disabled' : ''} />
+      <input class="channel-volume" type="range" min="0" max="100" value="${Math.round(state.volume*100)}" ${local ? 'disabled' : ''} />
       <div class="mixer-channel-actions"><button class="mix-toggle mute ${state.muted?'active':''}" ${local?'disabled':''}>M</button><button class="mix-toggle solo ${soloClientId===member.clientId?'active':''}" ${local?'disabled':''}>S</button></div>`;
     if (!local) {
       channel.querySelector('.channel-volume').addEventListener('input', e => {
@@ -939,7 +745,7 @@ function sendChat() {
 
 /* Avatar ajustável */
 function openAvatarEditor() {
-  avatarSource = currentAvatar || '/default-avatar.png';
+  avatarSource = currentAvatar || '/linozera-logo.png';
   avatarX = 0; avatarY = 0; avatarZoom = 1;
   $('avatarEditorImg').src = avatarSource;
   $('avatarZoom').value = '100';
@@ -985,7 +791,6 @@ async function checkForUpdate() {
 setInterval(checkForUpdate, 60000);
 
 /* Eventos socket */
-socket.on('public-rooms:changed', () => { if (!currentRoom) loadPublicRooms(false); });
 socket.on('room:status', data => { if (currentRoom && normalizeRoom(data.roomId) === currentRoom) applyRoomStatus(data); });
 socket.on('member:joined', () => { playUISound('join'); socket.emit('room:status'); });
 socket.on('member:left', ({ clientId: leftId }) => {
@@ -1069,7 +874,7 @@ $('fullscreenBtn').addEventListener('click', async () => {
 
 $('mixerBtn').addEventListener('click', () => { renderMixer(); $('mixerPanel').classList.toggle('hidden'); });
 $('closeMixerBtn').addEventListener('click', () => $('mixerPanel').classList.add('hidden'));
-$('masterVolume').addEventListener('input', e => { masterVolume = Number(e.target.value)/100; localStorage.setItem('lnz_master_volume', e.target.value); $('masterVolumeLabel').textContent = `${e.target.value}%`; applyAllVolumes(); syncSettingsUI(); });
+$('masterVolume').addEventListener('input', e => { masterVolume = Number(e.target.value)/100; $('masterVolumeLabel').textContent = `${e.target.value}%`; applyAllVolumes(); });
 $('chatToggleBtn').addEventListener('click', () => $('chatPanel').classList.toggle('closed'));
 $('closeChatBtn').addEventListener('click', () => $('chatPanel').classList.add('closed'));
 $('sendChatBtn').addEventListener('click', sendChat);
@@ -1096,56 +901,12 @@ $$('[data-move]').forEach(btn => btn.addEventListener('click', () => {
 $('avatarZoom').addEventListener('input', e => { avatarZoom = Number(e.target.value)/100; updateAvatarEditorPreview(); });
 $('saveAvatarBtn').addEventListener('click', saveAvatar);
 
-$('settingsBtn').addEventListener('click', () => openSettings('general'));
-$('homeSettingsBtn').addEventListener('click', () => openSettings('general'));
-$$('.settings-tab').forEach(btn => btn.addEventListener('click', () => selectSettingsTab(btn.dataset.settingsTab)));
-
-$('soundToggle').addEventListener('change', e => {
-  soundEnabled = e.target.checked;
-  localStorage.setItem('lnz_sounds', soundEnabled ? '1' : '0');
-  if (soundEnabled) playUISound('tap');
-  syncSettingsUI();
-});
-$('soundVolume').addEventListener('input', e => {
-  soundVolume = Number(e.target.value) / 100;
-  localStorage.setItem('lnz_sound_volume', e.target.value);
-  syncSettingsUI();
-});
-$('autoChatToggle').addEventListener('change', e => {
-  autoChatOpen = e.target.checked;
-  localStorage.setItem('lnz_auto_chat', autoChatOpen ? '1' : '0');
-  if (currentRoom) $('chatPanel').classList.toggle('closed', !autoChatOpen);
-  syncSettingsUI();
-});
-$('defaultMasterVolume').addEventListener('input', e => {
-  masterVolume = Number(e.target.value) / 100;
-  localStorage.setItem('lnz_master_volume', e.target.value);
-  applyAllVolumes();
-  syncSettingsUI();
-});
-$('audioBoostToggle').addEventListener('change', e => {
-  audioBoostEnabled = e.target.checked;
-  localStorage.setItem('lnz_audio_boost', audioBoostEnabled ? '1' : '0');
-  if (!audioBoostEnabled && masterVolume > 1) masterVolume = 1;
-  renderMixer();
-  applyAllVolumes();
-  syncSettingsUI();
-});
-$('defaultQualitySelect').addEventListener('change', e => {
-  if (!QUALITY[e.target.value]) return;
-  selectedQuality = e.target.value;
-  localStorage.setItem('lnz_quality', selectedQuality);
-  $('qualityDockLabel').textContent = QUALITY[selectedQuality].label;
-  $$('[data-quality]').forEach(b => b.classList.toggle('selected', b.dataset.quality === selectedQuality));
-  syncSettingsUI();
-});
-$('roomPublicToggleSettings').addEventListener('change', e => setRoomVisibility(e.target.checked));
-$('roomLockToggleSettings').addEventListener('change', e => setRoomLock(e.target.checked));
-$('settingsRefreshRoomBtn').addEventListener('click', () => refreshRoomStatus(true));
-$('settingsCopyInviteBtn').addEventListener('click', () => currentRoom && copyText(roomInviteUrl(), 'Link do convite copiado.'));
-$('settingsCloseRoomBtn').addEventListener('click', closeRoom);
-$('settingsDoneBtn').addEventListener('click', () => hideModal('settingsModal'));
-$('refreshRoomBtn').addEventListener('click', () => refreshRoomStatus(true));
+$('settingsBtn').addEventListener('click', () => showModal('settingsModal'));
+$('soundToggle').checked = soundEnabled;
+$('soundVolume').value = String(Math.round(soundVolume*100));
+$('soundVolumeLabel').textContent = `${Math.round(soundVolume*100)}%`;
+$('soundToggle').addEventListener('change', e => { soundEnabled=e.target.checked; localStorage.setItem('lnz_sounds', soundEnabled?'1':'0'); if (soundEnabled) playUISound('tap'); });
+$('soundVolume').addEventListener('input', e => { soundVolume=Number(e.target.value)/100; localStorage.setItem('lnz_sound_volume', e.target.value); $('soundVolumeLabel').textContent=`${e.target.value}%`; });
 
 $$('[data-close]').forEach(btn => btn.addEventListener('click', () => hideModal(btn.dataset.close)));
 $$('.modal-backdrop').forEach(backdrop => backdrop.addEventListener('click', e => { if (e.target === backdrop) hideModal(backdrop.id); }));
@@ -1159,6 +920,5 @@ window.addEventListener('beforeunload', () => {
 
 const initialRoom = normalizeRoom(new URLSearchParams(location.search).get('room'));
 if (initialRoom) $('roomInput').value = formatRoom(initialRoom);
-syncSettingsUI();
 loadPublicRooms(); checkForUpdate();
 setInterval(loadPublicRooms, 15000);
