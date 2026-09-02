@@ -15,9 +15,8 @@ const io = new Server(server, {
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const APP_VERSION = '4.6.0';
+const APP_VERSION = '4.5.0';
 const EMPTY_ROOM_TTL_MS = 120000;
-const OWNER_RECONNECT_GRACE_MS = 30000;
 const MAX_CHAT = 100;
 const rooms = new Map();
 
@@ -46,14 +45,12 @@ app.get('/api/version', (_req, res) => {
   res.json({
     version: APP_VERSION,
     notes: [
-      'Motor V3 mantido, agora com recuperação automática de conexão WebRTC',
+      'Motor de transmissão estável da V3 restaurado',
       'Visual desktop reconstruído para seguir o mockup aprovado',
       'Prévia local sempre muda e microfone bloqueado',
       'Configurações completas, abas e botões de atualização corrigidos',
       'Lobby sincroniza automaticamente quando salas públicas mudam',
-      'Modo sem retorno reforçado com restrictOwnAudio quando o navegador suporta',
-      'Qualidade Automática adapta bitrate/resolução para reduzir lag e saturação de upload',
-      'Tela inteira continua sem áudio do sistema para impedir retorno de Discord/Windows',
+      'Proteção extra: tela inteira não envia áudio do sistema para evitar retorno',
       'Salas públicas aparecem no lobby mesmo quando ainda não há transmissão',
       'Chat, avatar, sala trancável e seletor de qualidade mantidos'
     ]
@@ -110,20 +107,6 @@ function clearCleanup(room) {
   if (room?.cleanupTimer) clearTimeout(room.cleanupTimer);
   if (room) room.cleanupTimer = null;
 }
-function clearOwnerReconnect(room) {
-  if (room?.ownerReconnectTimer) clearTimeout(room.ownerReconnectTimer);
-  if (room) room.ownerReconnectTimer = null;
-}
-function scheduleOwnerReconnectTimeout(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-  clearOwnerReconnect(room);
-  room.ownerReconnectTimer = setTimeout(() => {
-    const current = rooms.get(roomId);
-    if (!current || current.members.has(current.ownerClientId)) return;
-    closeRoom(roomId, 'owner-timeout');
-  }, OWNER_RECONNECT_GRACE_MS);
-}
 function scheduleCleanup(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -171,7 +154,6 @@ function closeRoom(roomId, reason = 'closed') {
   const room = rooms.get(roomId);
   if (!room) return;
   clearCleanup(room);
-  clearOwnerReconnect(room);
   io.to(roomId).emit('room:closed', { reason });
   for (const member of room.members.values()) {
     const s = io.sockets.sockets.get(member.socketId);
@@ -194,16 +176,11 @@ function removeSocketFromRoom(socket, explicit = false) {
   const member = room.members.get(clientId);
   if (member?.socketId === socket.id) {
     const isOwner = clientId === room.ownerClientId;
-    if (isOwner && explicit) {
-      closeRoom(roomId, 'owner-left');
-      return;
-    }
     if (isOwner) {
       member.streaming = false;
       member.audio = false;
       socket.to(roomId).emit('host:stream', { active: false });
-      socket.to(roomId).emit('host:reconnecting', { explicit: false });
-      scheduleOwnerReconnectTimeout(roomId);
+      socket.to(roomId).emit('host:reconnecting', { explicit });
     } else {
       const owner = ownerMember(room);
       if (owner?.socketId) io.to(owner.socketId).emit('viewer:left', { viewerId: socket.id, viewerClientId: clientId });
@@ -246,8 +223,7 @@ io.on('connection', socket => {
       chat: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      cleanupTimer: null,
-      ownerReconnectTimer: null
+      cleanupTimer: null
     };
     rooms.set(id, room);
     socket.join(id);
@@ -269,7 +245,6 @@ io.on('connection', socket => {
     if (room.locked && !returning && !isOwner) return ack({ ok: false, locked: true, error: 'A sala está trancada.' });
 
     clearCleanup(room);
-    if (isOwner) clearOwnerReconnect(room);
     const previous = room.members.get(stableId);
     if (previous?.socketId && previous.socketId !== socket.id) io.to(previous.socketId).emit('member:replaced');
 
@@ -409,9 +384,6 @@ io.on('connection', socket => {
   });
   socket.on('webrtc:ice', ({ target, candidate } = {}) => {
     if (target && candidate && sameRoomTarget(socket, target)) io.to(target).emit('webrtc:ice', { from: socket.id, candidate });
-  });
-  socket.on('webrtc:restart-request', ({ target } = {}) => {
-    if (target && sameRoomTarget(socket, target)) io.to(target).emit('webrtc:restart-request', { from: socket.id });
   });
 
   socket.on('room:leave', () => removeSocketFromRoom(socket, true));

@@ -1,46 +1,28 @@
-# Linozera Transmissão V4.6 — Estabilidade e sem retorno reforçados
+# Linozera Transmissão V4.5 — Visual idêntico ao modelo
 
-Mantém o **visual preto + roxo neon aprovado** e o motor simples da V3 (o dono transmite e os demais assistem), com correções focadas em estabilidade, lag e áudio.
+Esta versão foi refeita para seguir o **layout aprovado pelo usuário**: preto + roxo neon, lobby com hero/card de entrada, salas públicas, recursos e rodapé; sala com painel esquerdo, transmissão central, chat à direita, mixer e dock inferior.
 
-## O que melhorou na V4.6
-- Qualidade **Automática adaptativa**: ajusta bitrate, FPS e escala por conexão quando a rede aperta.
-- No modo Automático, reduz o custo por espectador para não saturar tão rápido o upload do transmissor.
-- Recuperação automática de conexão WebRTC/ICE quando a rota cai ou fica desconectada.
-- Pool de ICE e configuração de transporte mais enxuta para conexão inicial/reconexão.
-- Se o dono cair da internet, a sala aguarda até 30 segundos para reconectar; depois encerra para não deixar sala “fantasma”.
-- Ao sair/encerrar/trocar de sessão, todas as faixas de captura são encerradas para não continuar compartilhando escondido.
+## Motor de transmissão
+- Mantém o motor simples/estável da V3: o dono da sala transmite e os demais assistem.
+- WebRTC direto entre transmissor e espectadores.
+- Reconexão pelo Socket.IO.
+- Qualidade: Automático, 480p30, 720p30, 1080p30, 1080p60 e 1440p60.
 
-## Sem retorno reforçado
-- Câmera e microfone continuam bloqueados pelo site.
+## Sem retorno
+- Câmera e microfone bloqueados pelo site.
 - Prévia local sempre muda.
-- O transmissor nunca toca a própria transmissão dentro do site.
-- `systemAudio: exclude` continua ativo.
-- Quando suportado pelo navegador, `restrictOwnAudio` tenta remover da captura o áudio produzido pela própria aba do Linozera.
-- Ao escolher **Tela inteira**, qualquer faixa de áudio capturada é removida. Isso evita puxar o áudio geral do Windows/Discord.
-- Para transmitir áudio do jogo/app, prefira **Janela** ou **Aba** específica.
-- Sons da interface não tocam enquanto você está compartilhando.
+- O transmissor não recebe a própria transmissão.
+- Ao escolher Tela inteira, o áudio do sistema é removido para reduzir retorno do Discord/Windows.
+- Para transmitir áudio, prefira uma Janela ou Aba específica.
 
-> Importante: nenhum site consegue separar perfeitamente Discord e jogo se o navegador/SO entregar os dois já misturados na mesma fonte de áudio. Para o modo mais seguro contra retorno, não compartilhe “Tela inteira” com áudio.
-
-## Qualidades
-- Automático (recomendado)
-- 480p • 30 FPS
-- 720p • 30 FPS
-- 1080p • 30 FPS
-- 1080p • 60 FPS
-- 1440p • 60 FPS
-
-Para evitar travamentos, deixe **Automático** como padrão, principalmente com mais de um espectador.
-
-## Recursos mantidos
-- Visual aprovado do lobby e da sala.
+## Recursos
 - Chat em tempo real.
-- Mixer com volume individual, Mute, Solo e reforço até 150%.
+- Mix de som com volume até 150% e reforço opcional.
 - Avatar com upload, posição e zoom.
-- Sala pública/privada e trancar/destrancar.
-- Atualização das salas públicas.
-- Central de Configurações.
-- Aviso de atualização.
+- Sala privada/pública e trancar/destrancar.
+- Atualização manual e automática das salas públicas.
+- Central de Configurações: Geral, Áudio, Transmissão e Sala.
+- Aviso de nova versão.
 - Sons interativos.
 - Discord: https://discord.gg/WndvT5HgG8
 
@@ -56,10 +38,8 @@ Para evitar travamentos, deixe **Automático** como padrão, principalmente com 
 
 O servidor usa `process.env.PORT` automaticamente.
 
-## TURN recomendado
-Para funcionar melhor entre provedores, CGNAT e redes restritas, configure no Render:
+## TURN opcional
+Para redes mais restritas, configure:
 - `TURN_URL`
 - `TURN_USERNAME`
 - `TURN_CREDENTIAL`
-
-TURN melhora a capacidade de conectar em redes difíceis, mas não substitui uma boa velocidade de upload.

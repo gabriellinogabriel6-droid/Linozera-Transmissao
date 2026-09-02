@@ -1,32 +1,23 @@
-const BUILD_VERSION = '4.6.0';
+const BUILD_VERSION = '4.5.0';
 const DISCORD_URL = 'https://discord.gg/WndvT5HgG8';
 const socket = io({ transports: ['websocket', 'polling'] });
 const $ = id => document.getElementById(id);
 const $$ = selector => [...document.querySelectorAll(selector)];
 
 const QUALITY = {
-  // Tetos mais conservadores: o navegador ainda pode reduzir abaixo deles quando a rede aperta.
-  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 5000000 },
-  '480p30': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1200000 },
-  '720p30': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 2500000 },
-  '1080p30': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 4500000 },
-  '1080p60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 7000000 },
-  '1440p60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 10000000 }
+  auto: { label: 'Automático', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
+  '480p30': { label: '480p • 30 FPS', width: 854, height: 480, fps: 30, bitrate: 1500000 },
+  '720p30': { label: '720p • 30 FPS', width: 1280, height: 720, fps: 30, bitrate: 3000000 },
+  '1080p30': { label: '1080p • 30 FPS', width: 1920, height: 1080, fps: 30, bitrate: 6000000 },
+  '1080p60': { label: '1080p • 60 FPS', width: 1920, height: 1080, fps: 60, bitrate: 9000000 },
+  '1440p60': { label: '1440p • 60 FPS', width: 2560, height: 1440, fps: 60, bitrate: 14000000 }
 };
-const ADAPTIVE_INTERVAL_MS = 3500;
-const PEER_RESTART_DELAY_MS = 1800;
-const MAX_PEER_RESTARTS_WINDOW_MS = 15000;
 
 const makeClientId = () => globalThis.crypto?.randomUUID ? crypto.randomUUID() : `c-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const clientId = localStorage.getItem('lnz_client_id') || makeClientId();
 localStorage.setItem('lnz_client_id', clientId);
 
-let rtcConfig = {
-  iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-  iceCandidatePoolSize: 4
-};
+let rtcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 let currentRoom = null;
 let currentNickname = localStorage.getItem('lnz_nickname') || '';
 let currentAvatar = localStorage.getItem('lnz_avatar') || '';
@@ -45,11 +36,6 @@ let reconnecting = false;
 const peers = new Map();
 const pendingIce = new Map();
 const knownViewers = new Set();
-const peerRecoveryTimers = new Map();
-const peerRestartHistory = new Map();
-const peerHealth = new Map();
-const peerBuilds = new Set();
-let adaptiveTimer = null;
 let viewerHostId = null;
 const remoteStreams = new Map();
 const chatIds = new Set();
@@ -71,9 +57,7 @@ let avatarY = 0;
 let avatarZoom = 1;
 
 fetch('/api/config').then(r => r.json()).then(cfg => {
-  if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) {
-    rtcConfig = { ...rtcConfig, iceServers: cfg.iceServers };
-  }
+  if (Array.isArray(cfg.iceServers) && cfg.iceServers.length) rtcConfig = { iceServers: cfg.iceServers };
 }).catch(() => {});
 
 function normalizeRoom(value) {
@@ -513,12 +497,6 @@ function leaveRoom() {
   playUISound('leave');
 }
 function resetRoomState() {
-  // Garante que nenhuma captura continue escondida após sair/encerrar/substituir a sessão.
-  if (localStream) {
-    localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
-    localStream = null;
-  }
-  stopAdaptiveMonitor();
   closeAllPeers();
   knownViewers.clear();
   viewerHostId = null;
@@ -529,45 +507,27 @@ function resetRoomState() {
   soloClientId = null;
   chatIds.clear();
   $('chatMessages').innerHTML = '<div class="chat-empty"><b>▢</b><strong>Nenhuma mensagem ainda</strong><span>Envie uma mensagem para a sala.</span></div>';
-  const previousRoom = currentRoom;
   currentRoom = null;
   isOwner = false;
-  ownerToken = null;
   roomLocked = false;
-  roomPublic = false;
-  if (normalizeRoom(sessionStorage.getItem('lnz_owner_room')) === normalizeRoom(previousRoom)) {
-    sessionStorage.removeItem('lnz_owner_room');
-    sessionStorage.removeItem('lnz_owner_token');
-  }
-  $('shareBtnLabel').textContent = 'Compartilhar tela';
-  $('shareBtn').classList.remove('stop');
   setRoomUrl(null);
   syncStreamTiles();
 }
 
 /* WebRTC estável da V3: um transmissor principal (dono) -> espectadores */
-function clearPeerRecovery(peerId) {
-  const timer = peerRecoveryTimers.get(peerId);
-  if (timer) clearTimeout(timer);
-  peerRecoveryTimers.delete(peerId);
-}
 function closePeer(peerId) {
-  clearPeerRecovery(peerId);
   const pc = peers.get(peerId);
   if (pc) {
     pc.onicecandidate = null;
     pc.ontrack = null;
     pc.onconnectionstatechange = null;
-    pc.oniceconnectionstatechange = null;
     try { pc.close(); } catch {}
   }
   peers.delete(peerId);
   pendingIce.delete(peerId);
-  peerHealth.delete(peerId);
 }
 function closeAllPeers() {
   [...peers.keys()].forEach(closePeer);
-  stopAdaptiveMonitor();
 }
 function cleanupPeersForMembers() {
   const sockets = new Set([...members.values()].map(m => m.socketId).filter(Boolean));
@@ -586,28 +546,6 @@ async function flushIce(peerId, pc) {
     try { await pc.addIceCandidate(candidate); } catch (err) { console.warn('ICE ignorado', err); }
   }
 }
-function canRestartPeer(peerId) {
-  const now = Date.now();
-  const recent = (peerRestartHistory.get(peerId) || []).filter(t => now - t < MAX_PEER_RESTARTS_WINDOW_MS);
-  if (recent.length >= 3) return false;
-  recent.push(now);
-  peerRestartHistory.set(peerId, recent);
-  return true;
-}
-function schedulePeerRecovery(peerId, mode, immediate = false) {
-  if (!peerId || peerRecoveryTimers.has(peerId) || !currentRoom) return;
-  const delay = immediate ? 250 : PEER_RESTART_DELAY_MS;
-  const timer = setTimeout(() => {
-    peerRecoveryTimers.delete(peerId);
-    if (!socket.connected || !currentRoom || !canRestartPeer(peerId)) return;
-    if (mode === 'host' && isOwner && localStream && knownViewers.has(peerId)) {
-      makeHostPeer(peerId, true);
-    } else if (mode === 'viewer' && !isOwner && viewerHostId === peerId) {
-      socket.emit('webrtc:restart-request', { target: peerId });
-    }
-  }, delay);
-  peerRecoveryTimers.set(peerId, timer);
-}
 function makePeer(peerId, mode) {
   closePeer(peerId);
   const pc = new RTCPeerConnection(rtcConfig);
@@ -615,138 +553,25 @@ function makePeer(peerId, mode) {
   pc.onicecandidate = event => {
     if (event.candidate) socket.emit('webrtc:ice', { target: peerId, candidate: event.candidate });
   };
-  const watchState = () => {
-    const state = pc.connectionState;
-    const ice = pc.iceConnectionState;
-    if (state === 'connected' || ice === 'connected' || ice === 'completed') {
-      clearPeerRecovery(peerId);
-      peerRestartHistory.delete(peerId);
-      if (isOwner && localStream) startAdaptiveMonitor();
-      return;
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') {
+      if (mode === 'viewer') toast('A conexão direta falhou. Configure um TURN no Render para redes restritas.', 4500);
+      closePeer(peerId);
     }
-    if (state === 'failed' || ice === 'failed') {
-      schedulePeerRecovery(peerId, mode, true);
-      return;
-    }
-    if (state === 'disconnected' || ice === 'disconnected') schedulePeerRecovery(peerId, mode, false);
   };
-  pc.onconnectionstatechange = watchState;
-  pc.oniceconnectionstatechange = watchState;
   return pc;
 }
-function targetSenderProfile(peerId) {
+async function applySenderBitrate(pc) {
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
-  let bitrate = cfg.bitrate;
-  let scale = 1;
-  let fps = cfg.fps;
-  let degradationPreference = cfg.fps >= 50 ? 'maintain-framerate' : 'balanced';
-
-  // P2P envia uma cópia por espectador. No Automático, reduzimos o custo por conexão
-  // quando há mais pessoas para impedir que o upload do transmissor fique saturado.
-  if (selectedQuality === 'auto') {
-    const viewers = Math.max(1, knownViewers.size);
-    if (viewers >= 5) { bitrate = Math.min(bitrate, 1800000); scale = 2; fps = 24; }
-    else if (viewers >= 3) { bitrate = Math.min(bitrate, 2600000); scale = 1.5; fps = 30; }
-    else if (viewers >= 2) { bitrate = Math.min(bitrate, 3600000); scale = 1.25; }
-
-    const health = peerHealth.get(peerId);
-    if (health) {
-      const { availableBitrate, rtt, loss, bandwidthLimited } = health;
-      if (Number.isFinite(availableBitrate) && availableBitrate > 0) bitrate = Math.min(bitrate, Math.max(700000, availableBitrate * 0.75));
-      if (bandwidthLimited || loss > 0.07 || rtt > 0.35) {
-        bitrate = Math.min(bitrate, 2200000);
-        scale = Math.max(scale, 1.5);
-        fps = Math.min(fps, 30);
-        degradationPreference = 'maintain-framerate';
-      }
-      if (loss > 0.14 || rtt > 0.65) {
-        bitrate = Math.min(bitrate, 1300000);
-        scale = Math.max(scale, 2);
-        fps = Math.min(fps, 24);
-      }
-    }
-  }
-  return { bitrate: Math.round(bitrate), scale, fps, degradationPreference };
-}
-async function applySenderTuning(pc, peerId) {
-  const profile = targetSenderProfile(peerId);
   for (const sender of pc.getSenders()) {
-    if (!sender.track) continue;
+    if (sender.track?.kind !== 'video') continue;
     try {
       const params = sender.getParameters();
-      params.encodings ??= [{}];
-      if (sender.track.kind === 'video') {
-        params.encodings[0].maxBitrate = profile.bitrate;
-        params.encodings[0].maxFramerate = profile.fps;
-        params.encodings[0].scaleResolutionDownBy = Math.max(1, profile.scale);
-        params.encodings[0].priority = 'high';
-        params.degradationPreference = profile.degradationPreference;
-      } else if (sender.track.kind === 'audio') {
-        // Áudio do jogo/janela é pequeno comparado ao vídeo; limite fixo ajuda a sobrar banda.
-        params.encodings[0].maxBitrate = 128000;
-        params.encodings[0].priority = 'high';
-      }
+      if (!params.encodings?.length) params.encodings = [{}];
+      params.encodings[0].maxBitrate = cfg.bitrate;
       await sender.setParameters(params);
-    } catch (error) {
-      // Fallback: alguns navegadores rejeitam scale/priority, mas aceitam bitrate/fps.
-      try {
-        const basic = sender.getParameters();
-        basic.encodings ??= [{}];
-        if (sender.track.kind === 'video') {
-          basic.encodings[0].maxBitrate = profile.bitrate;
-          basic.encodings[0].maxFramerate = profile.fps;
-          basic.degradationPreference = profile.degradationPreference;
-        } else if (sender.track.kind === 'audio') {
-          basic.encodings[0].maxBitrate = 128000;
-        }
-        await sender.setParameters(basic);
-      } catch {
-        console.debug('Ajuste RTP indisponível neste navegador.', error?.name || error);
-      }
-    }
+    } catch {}
   }
-}
-async function collectPeerHealth(peerId, pc) {
-  try {
-    const stats = await pc.getStats();
-    let availableBitrate = NaN;
-    let rtt = 0;
-    let loss = 0;
-    let bandwidthLimited = false;
-    stats.forEach(report => {
-      if (report.type === 'candidate-pair' && report.state === 'succeeded' && (report.nominated || report.selected)) {
-        if (Number.isFinite(report.availableOutgoingBitrate)) availableBitrate = report.availableOutgoingBitrate;
-        if (Number.isFinite(report.currentRoundTripTime)) rtt = Math.max(rtt, report.currentRoundTripTime);
-      }
-      if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
-        if (Number.isFinite(report.roundTripTime)) rtt = Math.max(rtt, report.roundTripTime);
-        if (Number.isFinite(report.fractionLost)) loss = Math.max(loss, report.fractionLost);
-      }
-      if (report.type === 'outbound-rtp' && report.kind === 'video' && report.qualityLimitationReason === 'bandwidth') bandwidthLimited = true;
-    });
-    peerHealth.set(peerId, { availableBitrate, rtt, loss, bandwidthLimited, at: Date.now() });
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function adaptiveTick() {
-  if (!isOwner || !localStream || selectedQuality !== 'auto') return;
-  const activePeers = [...peers.entries()].filter(([, pc]) => !['closed', 'failed'].includes(pc.connectionState));
-  await Promise.all(activePeers.map(async ([peerId, pc]) => {
-    await collectPeerHealth(peerId, pc);
-    await applySenderTuning(pc, peerId);
-  }));
-}
-function startAdaptiveMonitor() {
-  if (adaptiveTimer || !isOwner || !localStream || selectedQuality !== 'auto') return;
-  adaptiveTimer = setInterval(adaptiveTick, ADAPTIVE_INTERVAL_MS);
-  setTimeout(adaptiveTick, 800);
-}
-function stopAdaptiveMonitor() {
-  if (adaptiveTimer) clearInterval(adaptiveTimer);
-  adaptiveTimer = null;
-  peerHealth.clear();
 }
 async function applyQualityToLocalTrack() {
   if (!localStream) return;
@@ -754,7 +579,6 @@ async function applyQualityToLocalTrack() {
   const track = localStream.getVideoTracks()[0];
   if (track) {
     try {
-      track.contentHint = cfg.fps >= 50 ? 'motion' : 'detail';
       await track.applyConstraints({
         width: { ideal: cfg.width },
         height: { ideal: cfg.height },
@@ -762,29 +586,24 @@ async function applyQualityToLocalTrack() {
       });
     } catch (err) { console.warn('Qualidade limitada pelo navegador/tela', err); }
   }
-  if (isOwner) for (const [peerId, pc] of peers) await applySenderTuning(pc, peerId);
-  if (selectedQuality === 'auto') startAdaptiveMonitor(); else stopAdaptiveMonitor();
+  if (isOwner) for (const pc of peers.values()) await applySenderBitrate(pc);
   const self = members.get(clientId);
   if (self) { self.quality = cfg.label; syncStreamTiles(); }
   if (isOwner) socket.emit('room:stream', { active: true, quality: cfg.label, audio: localStream.getAudioTracks().length > 0 });
 }
-async function makeHostPeer(viewerId, forceRestart = false) {
-  if (!isOwner || !localStream || !viewerId || viewerId === socket.id || peerBuilds.has(viewerId)) return;
-  peerBuilds.add(viewerId);
+async function makeHostPeer(viewerId) {
+  if (!isOwner || !localStream || !viewerId || viewerId === socket.id) return;
   knownViewers.add(viewerId);
+  const pc = makePeer(viewerId, 'host');
+  for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
   try {
-    const pc = makePeer(viewerId, 'host');
-    for (const track of localStream.getTracks()) pc.addTrack(track, localStream);
-    const offer = await pc.createOffer(forceRestart ? { iceRestart: true } : undefined);
+    const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    await applySenderTuning(pc, viewerId);
+    await applySenderBitrate(pc);
     socket.emit('webrtc:offer', { target: viewerId, sdp: pc.localDescription });
   } catch (error) {
     console.error('Falha ao criar oferta', error);
     closePeer(viewerId);
-    schedulePeerRecovery(viewerId, 'host', false);
-  } finally {
-    peerBuilds.delete(viewerId);
   }
 }
 function ensureHostPeers() {
@@ -794,7 +613,6 @@ function ensureHostPeers() {
     knownViewers.add(member.socketId);
     if (!peers.has(member.socketId)) makeHostPeer(member.socketId);
   }
-  startAdaptiveMonitor();
 }
 function ownerInRoom() {
   return [...members.values()].find(m => m.owner) || null;
@@ -824,40 +642,26 @@ async function startSharing() {
   if (!navigator.mediaDevices?.getDisplayMedia) return toast('Seu navegador não suporta compartilhamento de tela.');
   const cfg = QUALITY[selectedQuality] || QUALITY.auto;
   try {
-    // Sem microfone/câmera. systemAudio=exclude evita oferecer o áudio geral do Windows.
-    // restrictOwnAudio, quando suportado, tenta retirar o áudio produzido por esta própria aba da captura.
-    const supported = navigator.mediaDevices.getSupportedConstraints?.() || {};
-    const audioConstraints = {};
-    if (supported.restrictOwnAudio) audioConstraints.restrictOwnAudio = true;
+    // Mantém o motor V3, mas preserva a proteção contra retorno solicitada.
+    // Nunca pedimos microfone/câmera. A prévia local fica muda e o Chrome é orientado a não capturar o áudio geral do sistema.
     const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width: { ideal: cfg.width },
-        height: { ideal: cfg.height },
-        frameRate: { ideal: cfg.fps, max: cfg.fps }
-      },
-      audio: audioConstraints,
+      video: { frameRate: { ideal: cfg.fps, max: cfg.fps } },
+      audio: true,
       selfBrowserSurface: 'exclude',
       surfaceSwitching: 'include',
       systemAudio: 'exclude',
       windowAudio: 'window',
       preferCurrentTab: false
     });
-    const videoTrack = stream.getVideoTracks()[0];
-    const displaySurface = videoTrack?.getSettings?.().displaySurface || '';
-    if (videoTrack) videoTrack.contentHint = cfg.fps >= 50 ? 'motion' : 'detail';
-    for (const audioTrack of stream.getAudioTracks()) {
-      try { audioTrack.contentHint = 'music'; } catch {}
-    }
-
+    const displaySurface = stream.getVideoTracks()[0]?.getSettings?.().displaySurface || '';
     if (displaySurface === 'monitor' && stream.getAudioTracks().length) {
-      // Tela inteira pode incluir Discord/Windows em alguns navegadores/SO. Para garantir
-      // o modo sem retorno, toda faixa de áudio é descartada nessa modalidade.
+      // Tela inteira pode misturar Discord/Windows. Para garantir o modo sem retorno,
+      // descartamos o áudio nessa modalidade. Janela/aba continua podendo enviar áudio.
       for (const track of [...stream.getAudioTracks()]) {
         try { stream.removeTrack(track); track.stop(); } catch {}
       }
-      toast('Tela inteira: áudio removido para impedir retorno. Para transmitir som, compartilhe uma janela ou aba.', 5200);
+      toast('Tela inteira: áudio do sistema foi removido para evitar retorno. Para transmitir som, compartilhe uma janela ou aba.');
     }
-
     localStream = stream;
     const self = members.get(clientId) || { clientId, socketId: socket.id, name: currentNickname, avatar: currentAvatar, owner: true };
     self.streaming = true;
@@ -871,11 +675,9 @@ async function startSharing() {
     socket.emit('room:stream', { active: true, quality: cfg.label, audio: self.audio });
     for (const viewerId of knownViewers) makeHostPeer(viewerId);
     ensureHostPeers();
-    if (videoTrack) {
-      videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
-      videoTrack.addEventListener('mute', () => { if (localStream) toast('A captura foi pausada pelo sistema.'); });
-    }
-    toast(self.audio ? 'Transmissão iniciada com áudio isolado da janela/aba.' : 'Transmissão iniciada sem áudio.');
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) videoTrack.addEventListener('ended', () => stopSharing(true), { once: true });
+    toast(self.audio ? 'Transmissão iniciada com áudio da janela/aba escolhida.' : 'Transmissão iniciada sem áudio.');
   } catch (err) {
     if (!['NotAllowedError', 'AbortError'].includes(err?.name)) {
       console.error(err);
@@ -886,7 +688,6 @@ async function startSharing() {
 }
 function stopSharing(notify = true) {
   if (!localStream) return;
-  stopAdaptiveMonitor();
   localStream.getTracks().forEach(track => { try { track.stop(); } catch {} });
   localStream = null;
   closeAllPeers();
@@ -938,11 +739,6 @@ socket.on('host:restored', ({ hostId }) => {
   viewerHostId = hostId || null;
   syncStreamTiles();
 });
-socket.on('webrtc:restart-request', ({ from }) => {
-  if (!isOwner || !localStream || !from) return;
-  knownViewers.add(from);
-  makeHostPeer(from, true);
-});
 socket.on('webrtc:offer', async ({ from, sdp }) => {
   if (isOwner || !from || !sdp) return;
   viewerHostId = from;
@@ -956,7 +752,6 @@ socket.on('webrtc:offer', async ({ from, sdp }) => {
   } catch (error) {
     console.error('Falha ao responder oferta', error);
     closePeer(from);
-    schedulePeerRecovery(from, 'viewer', false);
   }
 });
 socket.on('webrtc:answer', async ({ from, sdp }) => {
@@ -964,10 +759,7 @@ socket.on('webrtc:answer', async ({ from, sdp }) => {
   const pc = peers.get(from);
   if (!pc) return;
   try { await pc.setRemoteDescription(sdp); await flushIce(from, pc); }
-  catch (error) {
-    console.error('Falha ao aplicar resposta', error);
-    schedulePeerRecovery(from, 'host', false);
-  }
+  catch (error) { console.error('Falha ao aplicar resposta', error); }
 });
 socket.on('webrtc:ice', async ({ from, candidate }) => {
   if (!from || !candidate) return;
