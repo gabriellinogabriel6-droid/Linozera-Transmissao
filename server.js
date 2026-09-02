@@ -6,12 +6,18 @@ const crypto = require('crypto');
 const express = require('express');
 const { Server } = require('socket.io');
 
-const APP_VERSION = '5.1.0';
+const APP_VERSION = '5.1.1';
 const PORT = Number(process.env.PORT || 3000);
 const ROOM_EMPTY_TTL_MS = 2 * 60 * 1000;
 const OWNER_RECONNECT_GRACE_MS = 35 * 1000;
 const MAX_CHAT_MESSAGES = 120;
 const MAX_MEMBERS = 30;
+
+// Sem isso, qualquer erro inesperado em um handler de socket (ex: payload malformado
+// de um cliente) derruba o processo Node inteiro e encerra a transmissão para todos
+// os participantes da sala. Aqui só registramos o erro e seguimos rodando.
+process.on('uncaughtException', err => console.error('Erro não tratado:', err));
+process.on('unhandledRejection', err => console.error('Rejeição de Promise não tratada:', err));
 
 const app = express();
 const server = http.createServer(app);
@@ -69,6 +75,8 @@ app.get('/api/version', (_req, res) => {
   res.json({
     version: APP_VERSION,
     notes: [
+      'V5.1.1: a checagem de primeiro quadro local não trava mais o início da transmissão (podia falsamente abortar em navegadores que throttlam vídeo invisível)',
+      'V5.1.1: servidor não derruba mais o processo inteiro por um erro inesperado em um único evento de socket',
       'Correção V5.1 para tela preta: receptor aguarda quadro real antes de exibir o player',
       'Recuperação automática também quando nenhuma faixa de vídeo chega',
       'Captura em resolução nativa para evitar falhas de GPU/redimensionamento no Chrome/Windows',

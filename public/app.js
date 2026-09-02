@@ -61,6 +61,8 @@ let watchedRemoteVideoStream = null;
 let peers = new Map();
 let pendingIce = new Map();
 let peerRecovery = new Map();
+let peerFailStreak = new Map();
+let turnHintShown = false;
 let hostBuilding = new Set();
 let adaptiveTimer = null;
 let publicPollTimer = null;
@@ -393,6 +395,8 @@ function resetRoomUi() {
   resetRemoteMedia();
   disposeAudioPipeline();
   chatIds.clear();
+  peerFailStreak.clear();
+  turnHintShown = false;
   $('chatMessages').innerHTML = `<div class="chat-empty"><span>▢</span><b>Nenhuma mensagem ainda</b><small>Envie uma mensagem para a sala.</small></div>`;
   clearRoomSession();
   $('roomView').classList.add('hidden');
@@ -471,7 +475,7 @@ function closePeer(peerId) {
   const timer = peerRecovery.get(peerId); if (timer) clearTimeout(timer); peerRecovery.delete(peerId);
   const pc = peers.get(peerId);
   if (pc) { try { pc.onicecandidate = null; pc.ontrack = null; pc.close(); } catch {} }
-  peers.delete(peerId); pendingIce.delete(peerId); hostBuilding.delete(peerId);
+  peers.delete(peerId); pendingIce.delete(peerId); hostBuilding.delete(peerId); peerFailStreak.delete(peerId);
 }
 function closeAllPeers() { [...peers.keys()].forEach(closePeer); stopAdaptiveMonitor(); }
 function schedulePeerRecovery(peerId, role, delay = 1800) {
@@ -496,10 +500,21 @@ function newPeer(peerId, role) {
   const watch = () => {
     const state = pc.connectionState;
     const ice = pc.iceConnectionState;
-    if (state === 'failed' || ice === 'failed') schedulePeerRecovery(peerId, role, 300);
-    else if (state === 'disconnected' || ice === 'disconnected') schedulePeerRecovery(peerId, role, 2200);
+    if (state === 'failed' || ice === 'failed') {
+      const streak = (peerFailStreak.get(peerId) || 0) + 1;
+      peerFailStreak.set(peerId, streak);
+      // BUG FIX (não transmite): sem TURN configurado, algumas redes (CGNAT,
+      // Wi-Fi corporativo/público) nunca conseguem estabelecer P2P e o app ficava
+      // tentando de novo silenciosamente para sempre, parecendo travado sem aviso.
+      if (streak >= 3 && !turnHintShown) {
+        turnHintShown = true;
+        toast('Não foi possível conectar a transmissão nesta rede. Configure um servidor TURN no Render (TURN_URL/TURN_USERNAME/TURN_CREDENTIAL) para redes com CGNAT/firewall.', 9000);
+      }
+      schedulePeerRecovery(peerId, role, 300);
+    } else if (state === 'disconnected' || ice === 'disconnected') schedulePeerRecovery(peerId, role, 2200);
     else if (state === 'connected' || ice === 'connected' || ice === 'completed') {
       const t = peerRecovery.get(peerId); if (t) clearTimeout(t); peerRecovery.delete(peerId);
+      peerFailStreak.delete(peerId);
     }
   };
   pc.onconnectionstatechange = watch; pc.oniceconnectionstatechange = watch;
@@ -664,7 +679,13 @@ async function safeGetDisplayMedia() {
   };
   try { return await navigator.mediaDevices.getDisplayMedia(preferred); }
   catch (err) {
-    if (err?.name !== 'TypeError') throw err;
+    // Navegadores mais antigos/diferentes podem rejeitar as constraints avançadas
+    // (selfBrowserSurface, systemAudio, windowAudio, restrictOwnAudio) com nomes de
+    // erro diferentes, não só TypeError. Nesses casos caímos para a versão básica em
+    // vez de travar a transmissão. NotAllowedError/AbortError (usuário cancelou o
+    // seletor) continuam subindo para quem chamou, sem retry.
+    const fallbackable = ['TypeError', 'NotSupportedError', 'OverconstrainedError', 'ConstraintNotSatisfiedError'];
+    if (!fallbackable.includes(err?.name)) throw err;
     return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   }
 }
@@ -675,12 +696,18 @@ async function startSharing() {
     const stream = await safeGetDisplayMedia();
     const videoTrack = stream.getVideoTracks()[0];
     if (!videoTrack) { stream.getTracks().forEach(t => t.stop()); throw new Error('Nenhuma faixa de vídeo foi recebida.'); }
-    const localFrameOk = await waitForLocalVideoFrame(stream);
-    if (!localFrameOk) {
-      stream.getTracks().forEach(t => { try { t.stop(); } catch {} });
-      toast('A fonte escolhida não entregou imagem. Se for jogo/tela cheia, use modo Janela sem borda e compartilhe a Janela.', 7000);
-      return;
-    }
+    // IMPORTANTE (correção de tela preta / transmissão que não inicia):
+    // a checagem de "primeiro quadro" usa um <video> fora da tela (opacity:0) para
+    // confirmar a captura antes de liberar a transmissão. Vários navegadores throttlam
+    // ou pausam a decodificação de vídeos que não estão realmente visíveis por economia
+    // de energia, então essa checagem pode "falhar" mesmo com a captura funcionando
+    // perfeitamente. Antes isso ABORTAVA a transmissão inteira sem necessidade — agora é
+    // só um diagnóstico best-effort que nunca bloqueia o início real da transmissão.
+    waitForLocalVideoFrame(stream).then(ok => {
+      if (!ok && videoTrack.readyState === 'live') {
+        toast('A prévia demorou para carregar. Se a tela continuar preta para quem assiste, tente compartilhar a Janela em vez da Tela inteira.', 6500);
+      }
+    });
     const surface = videoTrack.getSettings?.().displaySurface || '';
     videoTrack.contentHint = (QUALITY[selectedQuality]?.fps || 30) >= 50 ? 'motion' : 'detail';
     // Monitor/tela inteira pode carregar Discord e a própria voz. Remover áudio é a forma segura.
@@ -742,7 +769,9 @@ async function tuneSender(pc, peerId) {
   let bitrate = q.bitrate;
   let fps = q.fps;
   if (selectedQuality === 'auto') {
-    const viewers = Math.max(1, (roomStatus?.members?.length || 1) - 1);
+    // Real connected viewers (not everyone in the room — lurkers who never
+    // requested the stream must not shrink the bitrate for people actually watching).
+    const viewers = Math.max(1, peers.size);
     if (viewers >= 5) bitrate = Math.min(bitrate, 1_500_000);
     else if (viewers >= 3) bitrate = Math.min(bitrate, 2_200_000);
     else if (viewers >= 2) bitrate = Math.min(bitrate, 3_000_000);
@@ -764,8 +793,22 @@ async function tuneSender(pc, peerId) {
     try {
       const p = sender.getParameters(); p.encodings ||= [{}];
       if (sender.track.kind === 'video') {
+        // BUG FIX (image quality): capture stays at the source's native resolution
+        // (that is what avoids the black-screen/GPU-rescale issue), but nothing was
+        // ever telling the encoder to scale DOWN to match the selected quality tier.
+        // A 1440p/4K source squeezed into a 480p-1080p bitrate produced a blocky,
+        // blurry image. scaleResolutionDownBy only shrinks what the *encoder* sends,
+        // never the capture surface itself, so it is safe with respect to that fix.
+        let scale = 1;
+        try {
+          const settings = sender.track.getSettings?.() || {};
+          if (settings.width && settings.height && q.width && q.height) {
+            scale = Math.max(1, settings.width / q.width, settings.height / q.height);
+          }
+        } catch {}
         p.encodings[0].maxBitrate = Math.round(bitrate);
         p.encodings[0].maxFramerate = fps;
+        p.encodings[0].scaleResolutionDownBy = scale;
         p.degradationPreference = 'balanced';
       } else p.encodings[0].maxBitrate = 160_000;
       await sender.setParameters(p);

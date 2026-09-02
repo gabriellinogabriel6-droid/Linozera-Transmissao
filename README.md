@@ -1,6 +1,16 @@
-# Linozera Transmissão V5.1 Pro — Correção Tela Preta
+# Linozera Transmissão V5.1.1 Pro — Correção Tela Preta
 
 Versão 5.1 com foco principal na correção de tela preta, estabilidade WebRTC e captura mais compatível com Chrome/Windows.
+
+## V5.1.1 — correções desta revisão
+
+- **Corrigido:** o app tinha uma checagem de "primeiro quadro" que usava um `<video>` invisível fora da tela para confirmar a captura antes de liberar a transmissão. Vários navegadores throttlam a decodificação de vídeos que não estão realmente visíveis (economia de energia), então essa checagem podia falhar e **abortar a transmissão inteira mesmo com a captura funcionando normalmente**. Agora isso é só um aviso e nunca mais bloqueia o início real da transmissão.
+- **Corrigido:** o fallback de `getDisplayMedia` só tratava erro do tipo `TypeError`; em alguns navegadores as constraints avançadas (áudio da aba, exclusão de sistema, etc.) podem ser recusadas com outros nomes de erro, o que travava a captura sem cair para o modo básico. Agora o fallback cobre mais casos.
+- **Corrigido:** o servidor não tinha proteção contra erro inesperado em um evento de socket — um payload malformado de qualquer participante podia derrubar o processo Node inteiro e encerrar a transmissão de todo mundo na sala. Agora o erro é registrado e o servidor continua rodando.
+
+## Se a tela ainda não aparecer para quem assiste
+
+Depois dessas correções, se a captura inicia (você vê sua própria prévia) mas quem assiste continua com tela preta/travada, o motivo mais comum em produção **não é bug de código, é rede**: STUN sozinho falha com frequência em CGNAT, Wi-Fi de empresa/faculdade e algumas operadoras móveis. Configure `TURN_URL`, `TURN_USERNAME` e `TURN_CREDENTIAL` no Render (veja a seção TURN abaixo) — sem isso, a conexão P2P direta simplesmente não é possível em boa parte das redes, e nenhuma correção de código resolve isso.
 
 ## Principais mudanças
 
